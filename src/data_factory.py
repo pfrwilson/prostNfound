@@ -26,8 +26,8 @@ approx_psa_density_min = table["approx_psa_density"].min()
 approx_psa_density_max = table["approx_psa_density"].max()
 approx_psa_density_avg = table["approx_psa_density"].mean()
 
-# Sextant core locations are converted to integer codes - 
-# here we assume left/right prostate side should have the 
+# Sextant core locations are converted to integer codes -
+# here we assume left/right prostate side should have the
 # same code
 CORE_LOCATION_TO_IDX = {
     "LML": 0,
@@ -92,7 +92,7 @@ class TransformV2:
         )(prostate_mask)
         prostate_mask = Mask(prostate_mask)
 
-        if item.get("rf") is not None: 
+        if item.get("rf") is not None:
             rf = item["rf"]
             rf = torch.from_numpy(rf.copy()).float()
             rf = rf.unsqueeze(0)
@@ -101,15 +101,14 @@ class TransformV2:
             rf = rf.repeat(3, 1, 1)
 
             if self.augment == "translate":
-               
 
                 bmode, rf, needle_mask, prostate_mask = RandomTranslation(
                     translation=(0.2, 0.2)
                 )(bmode, rf, needle_mask, prostate_mask)
 
-        else: 
+        else:
             bmode, needle_mask, prostate_mask = RandomTranslation(
-                    translation=(0.2, 0.2)
+                translation=(0.2, 0.2)
             )(bmode, needle_mask, prostate_mask)
 
         # interpolate the masks to the mask size
@@ -197,7 +196,7 @@ class DataLoaderFactory:
         rf_as_bmode: bool = False,
         include_rf: bool = True,
     ):
-        
+
         train_cores, val_cores, test_cores = select_cohort(
             fold=fold,
             n_folds=n_folds,
@@ -212,7 +211,6 @@ class DataLoaderFactory:
         if limit_train_data is not None:
             cores = train_cores
             center = [core.split("-")[0] for core in cores]
-            
 
             sss = StratifiedShuffleSplit(
                 n_splits=1,
@@ -233,16 +231,22 @@ class DataLoaderFactory:
         )
 
         self.train_dataset = BModeDatasetV1(
-            train_cores, self.train_transform, rf_as_bmode=rf_as_bmode, 
-            include_rf=include_rf
+            train_cores,
+            self.train_transform,
+            rf_as_bmode=rf_as_bmode,
+            include_rf=include_rf,
         )
         self.val_dataset = BModeDatasetV1(
-            val_cores, self.val_transform, rf_as_bmode=rf_as_bmode, 
-            include_rf=include_rf
+            val_cores,
+            self.val_transform,
+            rf_as_bmode=rf_as_bmode,
+            include_rf=include_rf,
         )
         self.test_dataset = BModeDatasetV1(
-            test_cores, self.val_transform, rf_as_bmode=rf_as_bmode,
-            include_rf=include_rf
+            test_cores,
+            self.val_transform,
+            rf_as_bmode=rf_as_bmode,
+            include_rf=include_rf,
         )
 
         self.batch_size = batch_size
@@ -274,5 +278,3 @@ class DataLoaderFactory:
             num_workers=8,
             pin_memory=True,
         )
-
-
