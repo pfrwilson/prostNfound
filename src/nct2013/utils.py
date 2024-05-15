@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from medAI.datasets.nct2013 import data_accessor
+from . import data_accessor
 
 DATA_ROOT = os.environ['DATA_ROOT']
 PREPROCESSED_DATA_DIR = os.path.join(DATA_ROOT, 'preprocessed_data')
