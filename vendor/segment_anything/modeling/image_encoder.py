@@ -106,7 +106,7 @@ class ImageEncoderViT(nn.Module):
             LayerNorm2d(out_chans),
         )
 
-    def forward(self, x: torch.Tensor, return_hiddens=False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         # "Return hiddens" feature added by Paul Wilson to support architectures built on top
         # of SAM, which need to access the intermediate features of the backbone.
 
@@ -114,15 +114,12 @@ class ImageEncoderViT(nn.Module):
         if self.pos_embed is not None:
             x = x + self.pos_embed
 
-        hiddens = []
         for blk in self.blocks:
             x = blk(x)
-            if return_hiddens:
-                hiddens.append(x)
 
         x = self.neck(x.permute(0, 3, 1, 2))
 
-        return (x, hiddens) if return_hiddens else x
+        return x
 
 
 class Block(nn.Module):
