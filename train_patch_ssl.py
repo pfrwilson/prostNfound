@@ -2,25 +2,18 @@
 Used to train patch-level self-supervised CNN, used to extract prompts for the ProstNFound method
 """
 
-
-
+from dataclasses import dataclass
 import logging
 import os
-from argparse import ArgumentParser
 
 import numpy as np
+from simple_parsing import Serializable, parse, ArgumentParser
 import torch
 import wandb
 from src.patch_model_factory import resnet10t_instance_norm
 from torchvision import transforms as T
 from tqdm import tqdm
 
-from src.nct2013.cohort_selection import (
-    apply_core_filters,
-    get_core_ids,
-    get_patient_splits_by_center,
-    get_patient_splits_by_fold,
-)
 from src.vicreg import VICReg
 from src.utils import (
     PatchView, 
@@ -33,50 +26,48 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import roc_auc_score
 from src.utils import DataFrameCollector
-from src.patches_dataset import BModePatchesDataset, RFPatchesDataset, Transform, SSLTransform
+from src.dataset import BModePatchesDataset, RFPatchesDataset
+from src.dataset import PatchesTransform as Transform
+from src.dataset import PatchesSSLTransform as SSLTransform
+import json
+from config import DataPaths
+import typing as tp 
+
+
+@dataclass
+class Args(Serializable):
+    """Run the patch-based self-supervision training for ProstNFound"""
+
+    splits_file: str 
+    paths: DataPaths = DataPaths()
+    
+    data_type: tp.Literal['bmode', 'rf'] = 'bmode' # whether to use BMode or RF data
+    patch_size: int = 128 # patch size in pixels (if using bmode) 
+    patch_stride: int = 32 # patch stride in pixelse (if using bmode)
+    patch_size_mm: tuple[float, float] = (5.0, 5.0) # patch size in mm (if using RF)
+    patch_stride_mm: tuple[float, float] = (1.0, 1.0) # patch_size in mm (if using RF)
+
+    batch_size: int = 128
+    full_prostate: bool = False # whether to use the full prostate for SSL patches. If False, only select patches within the needle mask.
+    epochs: int = 100
+    lr: float = 1e-3 
+    debug: bool = False
+    save_weights_path: str | None = None # Path to save the model weights with the best validation linear probing performance.
+    seed: int = 0 # Random seed
+    checkpoint_path: str | None = None # Path to save and load experiment state
+    outputs_path: str = "outputs.csv" # Path to save outputs of linear probing
+    name: str | None = None # Name of the experiment (for wandb)
+    run_test: bool = False # If set, computes probing outputs for the test set. Not set by default.
 
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def parse_args():
-    # fmt: off
-    parser = ArgumentParser(add_help=False)
-    group = parser.add_argument_group("Data")
-    group.add_argument("--test_center", type=str, default=None, help='Holdout center for testing. If None, uses K-fold')
-    group.add_argument("--fold", default=None, type=int, help='Fold for cross-validation. If None, test center should be specified instead.')
-    group.add_argument("--n_folds", default=5, type=int, help='Number of folds for cross-validation')
-    group.add_argument("--val_seed", type=int, default=0)
-    group.add_argument("--data_type", type=str, default="bmode", help='Whether to train on RF or BMode data.')
-    
-    args, _ = parser.parse_known_args()
-    if args.data_type == "bmode":
-        group.add_argument("--patch_size", type=int, default=128)
-        group.add_argument("--stride", type=int, default=32)
-    else: 
-        group.add_argument("--patch_size_mm", type=float, nargs=2, default=[5.0, 5.0])
-        group.add_argument("--patch_stride_mm", type=float, nargs=2, default=[1.0, 1.0])
-    group.add_argument("--batch_size", type=int, default=128)
-    group.add_argument("--full_prostate", action="store_true", default=False, 
-                       help="""Whether to use the full prostate for SSL patches. If False, only select patches within
-                       the needle mask.""")
-    
-    parser.add_argument("--epochs", type=int, default=100)
-    parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--debug", action="store_true")
-    parser.add_argument("--save_weights_path", type=str, default=None, help="Path to save the model weights with the best validation linear probing performance.")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed")
-    parser.add_argument("--checkpoint_path", type=str, default=None, help="Path to save and load experiment state")
-    parser.add_argument("-h", "--help", action="help", help="Show this help message and exit")
-    parser.add_argument("--outputs_path", type=str, default="outputs.csv", help="Path to save outputs of linear probing")
-    parser.add_argument("--name", type=str, default=None, help="Name of the experiment")
-    parser.add_argument("--run_test", action='store_true', default=False, help='If set, computes probing outputs for the test set. Not set by default.')
-
-    # fmt: on
-    return parser.parse_args()
+    return parse(Args, add_config_path_arg=True)
 
 
-def main(args):
+def main(args: Args):
     if args.checkpoint_path is not None and os.path.exists(args.checkpoint_path):
         state = torch.load(args.checkpoint_path)
     else:
@@ -87,7 +78,7 @@ def main(args):
 
     wandb_run_id = state["wandb_run_id"] if state is not None else None
     run = wandb.init(
-        project="miccai2024_ssl_debug", config=args, id=wandb_run_id, resume="allow", 
+        project="miccai2024_ssl_debug", config=args.to_dict(), id=wandb_run_id, resume="allow", 
         name=args.name
     )
     wandb_run_id = run.id
@@ -268,60 +259,54 @@ def run_linear_probing(model, train_loader, val_loader, other_loaders=[]):
     }, full_table
 
 
-def make_data_loaders(args):
-    print(f"Preparing data loaders for test center {args.test_center}")
+def make_data_loaders(args: Args):
+    print("Loading data...")
+
+    with open(args.splits_file, "r") as f:
+        splits = json.load(f)
     
-    if args.test_center is not None: 
-        train_patients, val_patients, test_patients = get_patient_splits_by_center(
-            args.test_center, val_size=0.2, val_seed=args.val_seed
-        )
-    else: 
-        train_patients, val_patients, test_patients = get_patient_splits_by_fold(
-            args.fold, n_folds=args.n_folds
-        )
-
-    print(f"Train patients: {len(train_patients)}")
-    print(f"Val patients: {len(val_patients)}")
-    print(f"Test patients: {len(test_patients)}")
-
-    ssl_train_core_ids = get_core_ids(train_patients)
-    train_core_ids = apply_core_filters(
-        ssl_train_core_ids.copy(),
-        exclude_benign_cores_from_positive_patients=True,
-        undersample_benign_ratio=1,
-        involvement_threshold_pct=40,
-    )
-    val_core_ids = get_core_ids(val_patients)
-    test_core_ids = get_core_ids(test_patients)
+    train_core_ids = splits["train"]
+    val_core_ids = splits["val"]
+    test_core_ids = splits["test"]
+    ssl_train_core_ids = splits["ssl_train"]
 
     print(f"SSL Train cores: {len(ssl_train_core_ids)}")
     print(f"Train cores: {len(train_core_ids)}")
     print(f"Val cores: {len(val_core_ids)}")
     print(f"Test cores: {len(test_core_ids)}")
 
+    data_hdf5_file = args.paths.data_h5_path
+    metadata_csv_file = args.paths.metadata_csv_path
+
     if args.data_type == "bmode": 
         print("SSL dataset...")
         ssl_dataset = BModePatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             ssl_train_core_ids,
             patch_size=(args.patch_size, args.patch_size),
-            stride=(args.stride, args.stride),
+            stride=(args.patch_stride, args.patch_stride),
             needle_mask_threshold=0.6 if not args.full_prostate else -1,
             prostate_mask_threshold=-1 if not args.full_prostate else 0.1,
             transform=SSLTransform(),
         )
         print("Train dataset...")
         train_dataset = BModePatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             train_core_ids,
             patch_size=(args.patch_size, args.patch_size),
-            stride=(args.stride, args.stride),
+            stride=(args.patch_stride, args.patch_stride),
             needle_mask_threshold=0.6,
             prostate_mask_threshold=-1,
             transform=Transform(),
         )
         all_train_dataset = BModePatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             ssl_train_core_ids, 
             patch_size=(args.patch_size, args.patch_size),
-            stride=(args.stride, args.stride),
+            stride=(args.patch_stride, args.patch_stride),
             needle_mask_threshold=0.6,
             prostate_mask_threshold=-1,
             transform=Transform(),
@@ -329,18 +314,22 @@ def make_data_loaders(args):
 
         print("Val dataset...")
         val_dataset = BModePatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             val_core_ids,
             patch_size=(args.patch_size, args.patch_size),
-            stride=(args.stride, args.stride),
+            stride=(args.patch_stride, args.patch_stride),
             needle_mask_threshold=0.6,
             prostate_mask_threshold=-1,
             transform=Transform(),
         )
         print("Test dataset...")
         test_dataset = BModePatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             test_core_ids,
             patch_size=(args.patch_size, args.patch_size),
-            stride=(args.stride, args.stride),
+            stride=(args.patch_stride, args.patch_stride),
             needle_mask_threshold=0.6,
             prostate_mask_threshold=-1,
             transform=Transform(),
@@ -348,6 +337,8 @@ def make_data_loaders(args):
     else: 
         print("SSL dataset...")
         ssl_dataset = RFPatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             ssl_train_core_ids,
             patch_size_mm=args.patch_size_mm,
             patch_stride_mm=args.patch_stride_mm,
@@ -357,6 +348,8 @@ def make_data_loaders(args):
         )
         print("Train dataset...")
         train_dataset = RFPatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             train_core_ids,
             patch_size_mm=args.patch_size_mm,
             patch_stride_mm=args.patch_stride_mm,
@@ -365,6 +358,8 @@ def make_data_loaders(args):
             transform=Transform(),
         )
         all_train_dataset = RFPatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             ssl_train_core_ids, 
             patch_size_mm=args.patch_size_mm,
             patch_stride_mm=args.patch_stride_mm,
@@ -374,6 +369,8 @@ def make_data_loaders(args):
         )
         print("Val dataset...")
         val_dataset = RFPatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             val_core_ids,
             patch_size_mm=args.patch_size_mm,
             patch_stride_mm=args.patch_stride_mm,
@@ -383,6 +380,8 @@ def make_data_loaders(args):
         )
         print("Test dataset...")
         test_dataset = RFPatchesDataset(
+            data_hdf5_file, 
+            metadata_csv_file,
             test_core_ids,
             patch_size_mm=args.patch_size_mm,
             patch_stride_mm=args.patch_stride_mm,
@@ -433,7 +432,6 @@ def make_data_loaders(args):
     print(f"Test batches: {len(test_loader)}")
 
     return ssl_loader, train_loader, all_train_loader, val_loader, test_loader
-
 
 
 if __name__ == "__main__":
