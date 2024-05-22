@@ -68,13 +68,26 @@ To use ProstNFound for PCa detection, follow these steps:
 1. Prepare your micro-ultrasound data according to the dataset format specified in the documentation (see the data folder for more details)
 
 2. (Optional - only required for using the patch CNN prompts): Run the self-supervised training stage for the CNN: 
-    ...
+    ```bash
+    FOLD=$SLURM_ARRAY_TASK_ID
+    N_FOLDS=10
+    SPLITS_PATH=splits/ssl_fold${FOLD}:${N_FOLDS}.json
+    DATA_TYPE=rf
+    CHECKPOINT_PATH=/checkpoint/$USER/$SLURM_JOB_ID/checkpoint.pt
 
-3. Run the training script to fine-tune the foundation model with domain-specific knowledge:
-    ...
+    srun python train_patch_ssl.py \
+        --splits_file $SPLITS_PATH \
+        --batch_size 64 \
+        --lr 1e-4 \
+        --data_type $DATA_TYPE \
+        --name patch_ssl_${CENTER}_${DATA_TYPE}_${VAL_SEED} \
+        --checkpoint_path=$CHECKPOINT_PATH \
+        --save_weights_path=ssl_checkpoints/fold${FOLD}:${N_FOLDS}_rf_ssl_weights.pt
+    ```
 
-3. Use the trained model for inference:
-    ...
+3. Run the training script to fine-tune the foundation model with domain-specific knowledge (see `scripts/run_main_training.sh` for an example)
+
+3. Use the trained model for inference (see `scripts/test_prostnfound.sh` for an example)
 
 ## License
 
