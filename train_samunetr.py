@@ -14,11 +14,14 @@ Our implementation of SAM_UNETR:
 For prostate cancer detection from Micro-Ultrasound.
 """
 
+from dataclasses import dataclass, field
 import logging
 import os
 import typing as tp
 from abc import ABC, abstractmethod
 import numpy as np
+from simple_parsing import parse
+from simple_parsing.helpers.serialization.serializable import Serializable
 import torch
 import torch.nn as nn
 from einops import rearrange, repeat
@@ -37,11 +40,14 @@ from src.data_factory import DataLoaderFactory
 import argparse
 from rich_argparse import ArgumentDefaultsRichHelpFormatter
 from torch.optim import AdamW
-from src.utils import DataFrameCollector, calculate_metrics
+from src.utils import DataFrameCollector, calculate_metrics, cosine_scheduler
 from skimage.transform import resize
 from skimage.filters import gaussian
 from src.sam_wrappers import build_medsam, build_sam
 from src.unetr import UNETR
+from src.dataset import get_dataloaders_main
+import config
+from src.losses import LossOptions, build_loss
 
 
 PROMPT_OPTIONS = [
@@ -58,63 +64,103 @@ PROMPT_OPTIONS = [
 ]
 
 
+# fmt: off
+@dataclass
+class Args(Serializable):
+    """Configuration for sam-Unetr training"""
+
+    splits_json_path: str = "splits.json"
+    paths: config.DataPaths = config.DataPaths()
+    data: config.MainDataOptions = config.MainDataOptions()
+    wandb: config.WandbOptions = field(default_factory=config.WandbOptions)
+    loss: LossOptions = LossOptions()
+
+    # training
+    optimizer: str = "adamw"
+    lr: float = 1e-5 
+    encoder_lr: float = 1e-5
+    warmup_lr: float = 1e-4
+    warmup_epochs: int = 5
+    wd: float = 0 # The weight decay to use for training. We found weight decay can degrade performance (likely due to forgetting foundation model pretraining) so it is off by default.
+    epochs: int = 30 # The number of epochs for the training and learning rate annealing.
+    cutoff_epoch: int = None # If not None, the training will stop after this epoch, but this will not affect the learning rate scheduler.
+    accumulate_grad_steps: int = 8 # The number of gradient accumulation steps to use. Can be used to increase the effective batch size when GPU memory is limited.
+    run_test: bool = False # If True, runs the test set. Should disable for experiments related to model selection (e.g. hyperparameter tuning)
+    test_every_epoch: bool = False # Only used if `--run_test` is set. If this is set, runs the test set every epoch. Otherwise, only runs it when a new best validation score is achieved.
+
+    # model 
+    backbone: str = 'medsam'
+
+    # miscellaneous
+    encoder_weights_path: str = None # The path to the encoder weights to use. If None, uses the Foundation Model initialization
+    encoder_load_mode: str = "none" # The mode to use for loading the encoder weights.
+    seed: int = 42 # The seed to use for training.
+    use_amp: bool = False # If True, uses automatic mixed precision.
+    device: str = 'cuda' if torch.cuda.is_available() else 'cpu' # The device to use for training
+    exp_dir: str = "experiments/default" # The directory to use for the experiment.
+    checkpoint_dir: str = None # The directory to use for the checkpoints. If None, does not save checkpoints.
+    debug: bool = False # If True, runs in debug mode.
+    save_weights: str = "best" # The mode to use for saving weights.
+# fmt: on
+
+
 def parse_args():
     # fmt: off
     
     parser = argparse.ArgumentParser(add_help=False, formatter_class=ArgumentDefaultsRichHelpFormatter)
 
-    group = parser.add_argument_group("Data", "Arguments related to data loading and preprocessing")
-    group.add_argument("--fold", type=int, default=None, help="The fold to use. If not specified, uses leave-one-center-out cross-validation.")
-    group.add_argument("--n_folds", type=int, default=None, help="The number of folds to use for cross-validation.")
-    group.add_argument("--test_center", type=str, default=None, 
-                        help="If not None, uses leave-one-center-out cross-validation with the specified center as test. If None, uses k-fold cross-validation.")
-    group.add_argument("--val_seed", type=int, default=0, 
-                       help="The seed to use for validation split.")            
-    group.add_argument("--undersample_benign_ratio", type=lambda x: float(x) if not x.lower() == 'none' else None, default=None,
-                       help="""If not None, undersamples benign cores with the specified ratio.""")
-    group.add_argument("--min_involvement_train", type=float, default=0.0,
-                       help="""The minimum involvement threshold to use for training.""")
-    group.add_argument("--batch_size", type=int, default=1, help="The batch size to use for training.")
-    group.add_argument("--augmentations", type=str, default="translate", help="The augmentations to use for training.")
-    group.add_argument("--remove_benign_cores_from_positive_patients", action="store_true", help="If True, removes benign cores from positive patients (training only).")
+    # group = parser.add_argument_group("Data", "Arguments related to data loading and preprocessing")
+    # group.add_argument("--fold", type=int, default=None, help="The fold to use. If not specified, uses leave-one-center-out cross-validation.")
+    # group.add_argument("--n_folds", type=int, default=None, help="The number of folds to use for cross-validation.")
+    # group.add_argument("--test_center", type=str, default=None, 
+    #                     help="If not None, uses leave-one-center-out cross-validation with the specified center as test. If None, uses k-fold cross-validation.")
+    # group.add_argument("--val_seed", type=int, default=0, 
+    #                    help="The seed to use for validation split.")            
+    # group.add_argument("--undersample_benign_ratio", type=lambda x: float(x) if not x.lower() == 'none' else None, default=None,
+    #                    help="""If not None, undersamples benign cores with the specified ratio.""")
+    # group.add_argument("--min_involvement_train", type=float, default=0.0,
+    #                    help="""The minimum involvement threshold to use for training.""")
+    # group.add_argument("--batch_size", type=int, default=1, help="The batch size to use for training.")
+    # group.add_argument("--augmentations", type=str, default="translate", help="The augmentations to use for training.")
+    # group.add_argument("--remove_benign_cores_from_positive_patients", action="store_true", help="If True, removes benign cores from positive patients (training only).")
 
-    group = parser.add_argument_group("Training", "Arguments related to training.")
-    group.add_argument("--optimizer", type=str, default="adamw", help="The optimizer to use for training.")
-    group.add_argument("--lr", type=float, default=1e-5, help="LR for the model.")
-    group.add_argument("--encoder_lr", type=float, default=1e-5, help="LR for the encoder part of the model.")
-    group.add_argument("--warmup_lr", type=float, default=1e-4, help="LR for the warmup, frozen encoder part.")
-    group.add_argument("--warmup_epochs", type=int, default=5, help="The number of epochs to train the warmup, frozen encoder part.")
-    group.add_argument("--wd", type=float, default=0, help="The weight decay to use for training.")
-    group.add_argument("--epochs", type=int, default=30, help="The number of epochs to train for in terms of LR scheduler.")
-    group.add_argument("--cutoff_epoch", type=int, default=None, help="If not None, the training will stop after this epoch, but this will not affect the learning rate scheduler.")
-    group.add_argument("--test_every_epoch", action="store_true", help="If True, runs the test set every epoch.")
-    group.add_argument("--accumulate_grad_steps", type=int, default=8, help="The number of gradient accumulation steps to use.")
+    # group = parser.add_argument_group("Training", "Arguments related to training.")
+    # group.add_argument("--optimizer", type=str, default="adamw", help="The optimizer to use for training.")
+    # group.add_argument("--lr", type=float, default=1e-5, help="LR for the model.")
+    # group.add_argument("--encoder_lr", type=float, default=1e-5, help="LR for the encoder part of the model.")
+    # group.add_argument("--warmup_lr", type=float, default=1e-4, help="LR for the warmup, frozen encoder part.")
+    # group.add_argument("--warmup_epochs", type=int, default=5, help="The number of epochs to train the warmup, frozen encoder part.")
+    # group.add_argument("--wd", type=float, default=0, help="The weight decay to use for training.")
+    # group.add_argument("--epochs", type=int, default=30, help="The number of epochs to train for in terms of LR scheduler.")
+    # group.add_argument("--cutoff_epoch", type=int, default=None, help="If not None, the training will stop after this epoch, but this will not affect the learning rate scheduler.")
+    # group.add_argument("--test_every_epoch", action="store_true", help="If True, runs the test set every epoch.")
+    # group.add_argument("--accumulate_grad_steps", type=int, default=8, help="The number of gradient accumulation steps to use.")
 
     # MODEL
-    group = parser.add_argument_group("Model", "Arguments related to the model.")
-    group.add_argument("--backbone", type=str, choices=('sam', 'medsam'), default='sam', help="The backbone to use for the model.")
+    # group = parser.add_argument_group("Model", "Arguments related to the model.")
+    # group.add_argument("--backbone", type=str, choices=('sam', 'medsam'), default='sam', help="The backbone to use for the model.")
 
     # LOSS
-    parser.add_argument("--n_loss_terms", type=int, default=1, help="The number of loss terms to use.")
-    args, _ = parser.parse_known_args()
-    n_loss_terms = args.n_loss_terms
-    for i in range(n_loss_terms):
-        group = parser.add_argument_group(f"Loss term {i}", f"Arguments related to loss term {i}.")
-        group.add_argument(f"--loss_{i}_name", type=str, default="valid_region", choices=('valid_region',), help="The name of the loss function to use."),
-        group.add_argument(f"--loss_{i}_base_loss_name", type=str, default="ce", 
-                           choices=('ce', 'gce', 'mae', 'mil'), help="The name of the lower-level loss function to use.")
-        def str2bool(str): 
-            return True if str.lower() == 'true' else False
-        group.add_argument(f"--loss_{i}_pos_weight", type=float, default=1.0, help="The positive class weight for the loss function.")
-        group.add_argument(f"--loss_{i}_prostate_mask", type=str2bool, default=True, help="If True, the loss will only be applied inside the prostate mask.")
-        group.add_argument(f"--loss_{i}_needle_mask", type=str2bool, default=True, help="If True, the loss will only be applied inside the needle mask.")
-        group.add_argument(f"--loss_{i}_weight", type=float, default=1.0, help="The weight to use for the loss function.")
+    # parser.add_argument("--n_loss_terms", type=int, default=1, help="The number of loss terms to use.")
+    # args, _ = parser.parse_known_args()
+    # n_loss_terms = args.n_loss_terms
+    # for i in range(n_loss_terms):
+    #     group = parser.add_argument_group(f"Loss term {i}", f"Arguments related to loss term {i}.")
+    #     group.add_argument(f"--loss_{i}_name", type=str, default="valid_region", choices=('valid_region',), help="The name of the loss function to use."),
+    #     group.add_argument(f"--loss_{i}_base_loss_name", type=str, default="ce", 
+    #                        choices=('ce', 'gce', 'mae', 'mil'), help="The name of the lower-level loss function to use.")
+    #     def str2bool(str): 
+    #         return True if str.lower() == 'true' else False
+    #     group.add_argument(f"--loss_{i}_pos_weight", type=float, default=1.0, help="The positive class weight for the loss function.")
+    #     group.add_argument(f"--loss_{i}_prostate_mask", type=str2bool, default=True, help="If True, the loss will only be applied inside the prostate mask.")
+    #     group.add_argument(f"--loss_{i}_needle_mask", type=str2bool, default=True, help="If True, the loss will only be applied inside the needle mask.")
+    #     group.add_argument(f"--loss_{i}_weight", type=float, default=1.0, help="The weight to use for the loss function.")
 
-    group = parser.add_argument_group("Wandb", "Arguments related to wandb.")
-    group.add_argument("--project", type=str, default="miccai2024", help="The wandb project to use.")
-    group.add_argument("--group", type=str, default=None, help="The wandb group to use.")
-    group.add_argument("--name", type=str, default=None, help="The wandb name to use.")
-    group.add_argument("--log_images", action="store_true", help="If True, logs images to wandb.")
+    # group = parser.add_argument_group("Wandb", "Arguments related to wandb.")
+    # group.add_argument("--project", type=str, default="miccai2024", help="The wandb project to use.")
+    # group.add_argument("--group", type=str, default=None, help="The wandb group to use.")
+    # group.add_argument("--name", type=str, default=None, help="The wandb name to use.")
+    # group.add_argument("--log_images", action="store_true", help="If True, logs images to wandb.")
 
     group = parser.add_argument_group("Misc", "Miscellaneous arguments.")
     group.add_argument("--encoder_weights_path", type=str, default=None, help="The path to the encoder weights to use.")
@@ -134,9 +180,8 @@ def parse_args():
     return args
 
 
-
 class Experiment:
-    def __init__(self, config):
+    def __init__(self, config: Args):
         self.config = config
 
     def setup(self):
@@ -150,12 +195,12 @@ class Experiment:
         logging.info("Running in directory: " + self.config.exp_dir)
 
         if self.config.debug:
-            self.config.name = "debug"
+            self.config.wandb.name = "debug"
         wandb.init(
-            project=self.config.project,
-            group=self.config.group,
-            name=self.config.name,
-            config=self.config,
+            project=self.config.wandb.project,
+            group=self.config.wandb.group,
+            name=self.config.wandb.name,
+            config=self.config.to_dict(),
         )
         logging.info("Wandb initialized")
         logging.info("Wandb url: " + wandb.run.url)
@@ -202,37 +247,14 @@ class Experiment:
 
     def setup_model(self):
         logging.info("Setting up model")
-    
+
         self.model = SAM_UNETR_Wrapper(backbone=self.config.backbone)
         self.model.to(self.config.device)
         torch.compile(self.model)
         self.model.freeze_backbone()  # freeze backbone for first few epochs
 
         # setup criterion
-        loss_terms = []
-        loss_weights = []
-        for i in range(self.config.n_loss_terms):
-            loss_name = getattr(self.config, f"loss_{i}_name")
-            base_loss_name = getattr(self.config, f"loss_{i}_base_loss_name")
-            loss_pos_weight = getattr(self.config, f"loss_{i}_pos_weight")
-            loss_prostate_mask = getattr(self.config, f"loss_{i}_prostate_mask")
-            loss_needle_mask = getattr(self.config, f"loss_{i}_needle_mask")
-            loss_weight = getattr(self.config, f"loss_{i}_weight")
-
-            if loss_name == "valid_region":
-                loss_terms.append(
-                    CancerDetectionValidRegionLoss(
-                        base_loss=base_loss_name,
-                        loss_pos_weight=loss_pos_weight,
-                        prostate_mask=loss_prostate_mask,
-                        needle_mask=loss_needle_mask,
-                    )
-                )
-                loss_weights.append(loss_weight)
-            else:
-                raise ValueError(f"Unknown loss name: {loss_name}")
-
-        self.loss_fn = MultiTermCanDetLoss(loss_terms, loss_weights)
+        self.loss_fn = build_loss(self.config.loss)
 
     def setup_optimizer(self):
 
@@ -247,8 +269,6 @@ class Experiment:
             },
         ]
         self.optimizer = AdamW(params, lr=self.config.lr, weight_decay=self.config.wd)
-
-        
 
         self.lr_scheduler = cosine_scheduler(
             self.config.lr,
@@ -268,34 +288,21 @@ class Experiment:
     def setup_data(self):
         logging.info("Setting up data")
 
-        if self.config.model_type == "ProFoundNet":
-            if self.config.backbone == "sam_med2d":
-                if self.config.replace_patch_embed:
-                    self.config.image_size, self.config.mask_size = 1024, 64
-                else:
-                    self.config.image_size, self.config.mask_size = 1024, 64
-            else:
-                self.config.image_size, self.config.mask_size = 1024, 256
+        self.image_size, self.mask_size = 1024, 256
 
-        elif self.config.model_type == "SAM_UNETR":
-            self.config.image_size, self.config.mask_size = 1024, 256
-
-        data_factory = DataLoaderFactory(
-            fold=self.config.fold,
-            n_folds=self.config.n_folds,
-            test_center=self.config.test_center,
-            undersample_benign_ratio=self.config.undersample_benign_ratio,
-            min_involvement_train=self.config.min_involvement_train,
-            batch_size=self.config.batch_size,
-            image_size=self.config.image_size,
-            mask_size=self.config.mask_size,
-            augmentations=self.config.augmentations,
-            remove_benign_cores_from_positive_patients=self.config.remove_benign_cores_from_positive_patients,
-            val_seed=self.config.val_seed,
+        self.train_loader, self.val_loader, self.test_loader = get_dataloaders_main(
+            self.config.paths.data_h5_path,
+            self.config.paths.metadata_csv_path,
+            self.config.splits_json_path,
+            prompts_csv_file=None,
+            augment=self.config.data.augmentations,
+            image_size=self.config.data.image_size,
+            mask_size=self.config.data.mask_size,
+            include_rf=False,
+            rf_as_bmode=False,
+            batch_size=self.config.data.batch_size,
+            num_workers=self.config.data.num_workers,
         )
-        self.train_loader = data_factory.train_loader()
-        self.val_loader = data_factory.val_loader()
-        self.test_loader = data_factory.test_loader()
         logging.info(f"Number of training batches: {len(self.train_loader)}")
         logging.info(f"Number of validation batches: {len(self.val_loader)}")
         logging.info(f"Number of test batches: {len(self.test_loader)}")
@@ -335,7 +342,7 @@ class Experiment:
             val_metrics = self.run_eval_epoch(self.val_loader, desc="val")
 
             if val_metrics is not None:
-                tracked_metric = val_metrics["val/core_auc_high_involvement"]
+                tracked_metric = val_metrics["val/auc_high_involvement"]
                 new_record = tracked_metric > self.best_score
             else:
                 new_record = None
@@ -348,7 +355,7 @@ class Experiment:
                 self.training = False
                 logging.info("Running test set")
                 metrics = self.run_eval_epoch(self.test_loader, desc="test")
-                test_score = metrics["test/core_auc_high_involvement"]
+                test_score = metrics["test/auc_high_involvement"]
             else:
                 test_score = None
 
@@ -360,7 +367,6 @@ class Experiment:
     def run_train_epoch(self, loader, desc="train"):
         # setup epoch
         self.model.train()
-        
 
         accumulator = DataFrameCollector()
 
@@ -395,12 +401,8 @@ class Experiment:
             needle_mask = batch.pop("needle_mask").to(self.config.device)
             prostate_mask = batch.pop("prostate_mask").to(self.config.device)
 
-            psa = batch["psa"].to(self.config.device)
-            age = batch["age"].to(self.config.device)
             label = batch["label"].to(self.config.device)
             involvement = batch["involvement"].to(self.config.device)
-            family_history = batch["family_history"].to(self.config.device)
-            anatomical_location = batch["loc"].to(self.config.device)
             B = len(bmode)
             task_id = torch.zeros(B, dtype=torch.long, device=bmode.device)
 
@@ -409,13 +411,6 @@ class Experiment:
                 # forward pass
                 heatmap_logits = self.model(
                     bmode,
-                    task_id=task_id,
-                    anatomical_location=anatomical_location,
-                    psa=psa,
-                    age=age,
-                    family_history=family_history,
-                    prostate_mask=prostate_mask,
-                    needle_mask=needle_mask,
                 )
 
                 if torch.any(torch.isnan(heatmap_logits)):
@@ -482,7 +477,7 @@ class Experiment:
             wandb.log(step_metrics)
 
             # log images
-            if train_iter % 100 == 0 and self.config.log_images:
+            if train_iter % 100 == 0 and self.config.wandb.log_images:
                 self.show_example(batch_for_image_generation)
                 wandb.log({f"{desc}_example": wandb.Image(plt)})
                 plt.close()
@@ -497,8 +492,6 @@ class Experiment:
     def run_eval_epoch(self, loader, desc="eval"):
         self.model.eval()
 
-        
-
         accumulator = DataFrameCollector()
 
         for train_iter, batch in enumerate(tqdm(loader, desc=desc)):
@@ -509,23 +502,10 @@ class Experiment:
             needle_mask = batch.pop("needle_mask").to(self.config.device)
             prostate_mask = batch.pop("prostate_mask").to(self.config.device)
 
-            psa = batch["psa"].to(self.config.device)
-            age = batch["age"].to(self.config.device)
-            family_history = batch["family_history"].to(self.config.device)
-            anatomical_location = batch["loc"].to(self.config.device)
             B = len(bmode)
-            task_id = torch.zeros(B, dtype=torch.long, device=bmode.device)
-
             with torch.cuda.amp.autocast(enabled=self.config.use_amp):
                 heatmap_logits = self.model(
                     bmode,
-                    task_id=task_id,
-                    anatomical_location=anatomical_location,
-                    psa=psa,
-                    age=age,
-                    family_history=family_history,
-                    prostate_mask=prostate_mask,
-                    needle_mask=needle_mask,
                 )
 
                 # compute predictions
@@ -549,7 +529,7 @@ class Experiment:
                     )
                 mean_predictions_in_prostate = torch.stack(mean_predictions_in_prostate)
 
-            if train_iter % 100 == 0 and self.config.log_images:
+            if train_iter % 100 == 0 and self.config.wandb.log_images:
                 self.show_example(batch_for_image_generation)
                 wandb.log({f"{desc}_example": wandb.Image(plt)})
                 plt.close()
@@ -567,7 +547,6 @@ class Experiment:
         return self.create_and_report_metrics(results_table, desc=desc)
 
     def create_and_report_metrics(self, results_table, desc="eval"):
-        
 
         # core predictions
         predictions = results_table.average_needle_heatmap_value.values
@@ -579,7 +558,7 @@ class Experiment:
 
         metrics = {}
         metrics_ = calculate_metrics(
-            predictions, labels, log_images=self.config.log_images
+            predictions, labels, log_images=self.config.wandb.log_images
         )
         metrics.update(metrics_)
 
@@ -591,7 +570,7 @@ class Experiment:
             core_probs = core_probs[keep]
             core_labels = core_labels[keep]
             metrics_ = calculate_metrics(
-                core_probs, core_labels, log_images=self.config.log_images
+                core_probs, core_labels, log_images=self.config.wandb.log_images
             )
             metrics.update(
                 {
@@ -610,7 +589,7 @@ class Experiment:
             results_table.groupby("patient_id").clinically_significant.sum() > 0
         ).values
         metrics_ = calculate_metrics(
-            predictions, labels, log_images=self.config.log_images
+            predictions, labels, log_images=self.config.wandb.log_images
         )
         metrics.update(
             {f"{metric}_patient": value for metric, value in metrics_.items()}
@@ -625,30 +604,18 @@ class Experiment:
     def show_example(self, batch):
         # don't log images by default, since they take up a lot of space.
         # should be considered more of a debuagging/demonstration tool
-        if self.config.log_images is False:
+        if self.config.wandb.log_images is False:
             return
 
         bmode = batch["bmode"].to(self.config.device)
         needle_mask = batch["needle_mask"].to(self.config.device)
         prostate_mask = batch["prostate_mask"].to(self.config.device)
         label = batch["label"].to(self.config.device)
-        involvement = batch["involvement"].to(self.config.device)
-        psa = batch["psa"].to(self.config.device)
-        age = batch["age"].to(self.config.device)
-        family_history = batch["family_history"].to(self.config.device)
-        anatomical_location = batch["loc"].to(self.config.device)
         B = len(bmode)
         task_id = torch.zeros(B, dtype=torch.long, device=bmode.device)
 
         logits = self.model(
             bmode,
-            task_id=task_id,
-            anatomical_location=anatomical_location,
-            psa=psa,
-            age=age,
-            family_history=family_history,
-            prostate_mask=prostate_mask,
-            needle_mask=needle_mask,
         )
 
         pred = logits.sigmoid()
@@ -679,7 +646,7 @@ class Experiment:
 
         alpha = torch.nn.functional.interpolate(
             valid_loss_region[None, None],
-            size=(self.config.mask_size, self.config.mask_size),
+            size=(self.config.data.mask_size, self.config.data.mask_size),
             mode="nearest",
         )[0, 0]
         ax[2].imshow(pred[0, 0], alpha=alpha, **kwargs)
@@ -906,10 +873,8 @@ class CancerDetectionSoftValidRegionLoss(CancerDetectionLossBase):
             mask = mask.float().cpu().numpy()[0]
 
             # resize and blur mask
-            
 
             mask = resize(mask, (256, 256), order=0)
-            
 
             mask = gaussian(mask, self.sigma, mode="constant", cval=0)
             mask = mask - mask.min()
@@ -931,8 +896,7 @@ class CancerDetectionSoftValidRegionLoss(CancerDetectionLossBase):
         return loss
 
 
-class CancerDetectionMILRegionLoss(nn.Module):
-    ...
+class CancerDetectionMILRegionLoss(nn.Module): ...
 
 
 class MultiTermCanDetLoss(CancerDetectionLossBase):
@@ -1003,7 +967,6 @@ class ModelInterface(nn.Module, ABC):
 class SAM_UNETR_Wrapper(ModelInterface):
     def __init__(self, backbone: tp.Literal["sam", "medsam"] = "sam"):
         super().__init__()
-        
 
         _sam_model = build_sam() if backbone == "sam" else build_medsam()
         self.model = UNETR(
@@ -1048,7 +1011,7 @@ class BinaryGeneralizedCrossEntropy(torch.nn.Module):
 
 
 if __name__ == "__main__":
-    args = parse_args()
-
+    args = parse(Args, add_config_path_arg=True)
+    print(args.dumps_json())
     experiment = Experiment(args)
     experiment.run()
