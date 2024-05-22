@@ -69,7 +69,7 @@ To use ProstNFound for PCa detection, follow these steps:
 
 2. (Optional - only required for using the patch CNN prompts): Run the self-supervised training stage for the CNN: 
     ```bash
-    FOLD=$SLURM_ARRAY_TASK_ID
+    FOLD=1
     N_FOLDS=10
     SPLITS_PATH=splits/ssl_fold${FOLD}:${N_FOLDS}.json
     DATA_TYPE=rf
