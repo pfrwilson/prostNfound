@@ -46,7 +46,8 @@ def parse_args():
     # fmt: off
     parser = ArgumentParser(add_help=False, formatter_class=ArgumentDefaultsRichHelpFormatter)
 
-    group = parser.add_argument_group("Data", "Arguments related to data loading and preprocessing")
+    # data args
+    group = parser.add_argument_group("Data - cohort selection", "Arguments related to cohort selection")
     group.add_argument("--fold", type=int, default=None, help="The fold to use. If not specified, uses leave-one-center-out cross-validation.")
     group.add_argument("--n_folds", type=int, default=None, help="The number of folds to use for cross-validation.")
     group.add_argument("--test_center", type=str, default=None, 
@@ -57,15 +58,19 @@ def parse_args():
                        help="""If not None, undersamples benign cores with the specified ratio.""")
     group.add_argument("--min_involvement_train", type=float, default=0.0,
                        help="""The minimum involvement threshold to use for training.""")
+    group.add_argument("--remove_benign_cores_from_positive_patients", action="store_true", help="If True, removes benign cores from positive patients (training only).")
+    group.add_argument("--limit_train_data", type=float, default=1., 
+                       help="""If less than 1, chooses a center-balanced subset of the original train data to train with. The value given is the fraction of the original data to use.""")
+    group.add_argument("--train_subsample_seed", type=int, default=42, help="The seed to use for subsampling the training data (if limit_train_data < 1).")
+    group.add_argument("--splits_json_file", help="If provided, overrides all of the above argument and looks up the core_ids for train, validation and test from the given splits file. The file should be a json file with keys 'train', 'val' and 'test' each containing a list of core_ids.") 
+    
+    group = parser.add_argument_group("Data - Processing", "Arguments related to data loading and preprocessing")
     group.add_argument("--batch_size", type=int, default=4, 
         help="The batch size to use for training. Often limited by GPU size - if you want a larger effective batch size you can also adjust `--accumulate_grad_steps`.")
     group.add_argument("--augmentations", type=str, default="translate", help="The augmentations to use for training. We found random translation to boost performance compared to no augmentations.")
-    group.add_argument("--remove_benign_cores_from_positive_patients", action="store_true", help="If True, removes benign cores from positive patients (training only).")
     group.add_argument("--image_size", type=int, default=1024, help="The size to use for the images.")
     group.add_argument("--mask_size", type=int, default=256, help="The size to use for the masks.")
-    group.add_argument("--limit_train_data", type=float, default=1., 
-                       help="""If less than 1, chooses a center-balanced subset of the original train data to train with. The value given is the fraction of the original data to use.""")
-    group.add_argument("--train_subsample_seed", type=int, default=42, help="The seed to use for subsampling the training data (if limit_train_data < 1).") 
+    
     group.add_argument("--rf_as_bmode", action="store_true", help="If True, uses the RF images as B-mode images. (Hack to be used to test foundation model performance on RF directly)")
     
     parser.add_argument('--custom_prompt_table_path', type=str, default=None, help="The path to the custom prompt table to use.")
@@ -364,6 +369,7 @@ class Experiment:
             train_subset_seed=self.config.train_subsample_seed,
             rf_as_bmode=self.config.rf_as_bmode,
             include_rf= "sparse_cnn_patch_features_rf" in self.config.prompts,
+            splits_file=self.config.splits_json_file
         )
         self.train_loader = data_factory.train_loader()
         self.val_loader = data_factory.val_loader()
@@ -609,8 +615,6 @@ class Experiment:
     def run_eval_epoch(self, loader, desc="eval"):
         self.model.eval()
 
-        
-
         accumulator = DataFrameCollector()
 
         for train_iter, batch in enumerate(tqdm(loader, desc=desc)):
@@ -695,7 +699,6 @@ class Experiment:
 
     def create_and_report_metrics(self, results_table, desc="eval"):
         
-
         # core predictions
         predictions = results_table.average_needle_heatmap_value.values
         labels = results_table.label.values
@@ -1704,7 +1707,6 @@ class ProstNFound(nn.Module):
 
     def get_params_groups(self):
         
-
         encoder_parameters = [
             p
             for (k, p) in self.medsam_model.image_encoder.named_parameters()

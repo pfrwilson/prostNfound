@@ -1,0 +1,85 @@
+{
+    "splits_json_path": "splits/fold0:10.json",
+    "paths": {
+        "metadata_csv_path": "/ssd005/projects/exactvu_pca/nct2013/metadata_with_approx_psa_density.csv",
+        "data_dir": "/ssd005/projects/exactvu_pca/nct2013",
+        "data_h5_path": "/ssd005/projects/exactvu_pca/nct2013/data.h5"
+    },
+    "data": {
+        "prompt_table_csv_path": "prompt_table.csv",
+        "num_workers": 4,
+        "batch_size": 4,
+        "augmentations": "translate",
+        "image_size": 1024,
+        "mask_size": 256,
+        "rf_as_bmode": false
+    },
+    "model": {
+        "backbone": "adapter_medsam",
+        "floating_point_prompts": [
+            "normalized_psa",
+            "normalized_psadensity",
+            "normalized_age"
+        ],
+        "discrete_prompts": [],
+        "discrete_prompts_nvals": [],
+        "use_sparse_cnn_patch_features": false,
+        "use_sparse_cnn_patch_features_rf": true,
+        "num_data_independent_prompts": 0,
+        "prompt_dropout": 0.0,
+        "pool_patch_features": "max",
+        "sparse_cnn_backbone_path": "ssl_checkpoints/fold0:10_rf_ssl_weights.pt"
+    },
+    "wandb": {
+        "project": "miccai2024",
+        "group": null,
+        "name": "fold-0_reprod",
+        "log_images": false,
+        "tags": []
+    },
+    "loss": {
+        "loss_name": [
+            "valid_region"
+        ],
+        "loss_base_loss_name": [
+            "ce"
+        ],
+        "loss_pos_weight": [
+            2.0
+        ],
+        "loss_prostate_mask": [
+            true
+        ],
+        "loss_needle_mask": [
+            true
+        ],
+        "loss_weight": [
+            1.0
+        ]
+    },
+    "optimizer": "adamw",
+    "cnn_lr": 1e-06,
+    "cnn_frozen_epochs": 20,
+    "cnn_warmup_epochs": 3,
+    "encoder_lr": 1e-05,
+    "encoder_frozen_epochs": 0,
+    "encoder_warmup_epochs": 5,
+    "main_lr": 1e-05,
+    "main_frozen_epochs": 0,
+    "main_warmup_epochs": 5,
+    "wd": 0.0,
+    "epochs": 35,
+    "cutoff_epoch": null,
+    "accumulate_grad_steps": 2,
+    "run_test": true,
+    "test_every_epoch": true,
+    "encoder_weights_path": null,
+    "encoder_load_mode": "none",
+    "seed": 42,
+    "use_amp": true,
+    "device": "cuda",
+    "exp_dir": "experiments/fold-0_reprod/12676934",
+    "checkpoint_dir": "/checkpoint/pwilson/12676934",
+    "debug": false,
+    "save_weights": "best"
+}

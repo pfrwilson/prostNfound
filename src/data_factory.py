@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import json
 
 import numpy as np
 import torch
@@ -8,6 +9,7 @@ from torchvision.transforms import v2 as T
 from torchvision.transforms.functional import InterpolationMode
 from torchvision.tv_tensors import Image, Mask
 from .transform import RandomTranslation
+from torch.utils.data.sampler import RandomSampler
 
 from .nct2013.data_access import data_accessor
 from .nct2013.bmode_dataset import BModeDatasetV1
@@ -62,6 +64,8 @@ class TransformV2:
 
     def __call__(self, item):
         out = item.copy()
+
+        # IMAGE DATA PROCESSING
         bmode = item["bmode"]
         bmode = torch.from_numpy(bmode.copy()).float()
         bmode = bmode.unsqueeze(0)
@@ -100,16 +104,15 @@ class TransformV2:
                 rf = T.Resize((2504, 512), antialias=True)(rf)
             rf = rf.repeat(3, 1, 1)
 
-            if self.augment == "translate":
-
+        if self.augment == "translate":
+            if item.get("rf") is not None:
                 bmode, rf, needle_mask, prostate_mask = RandomTranslation(
                     translation=(0.2, 0.2)
                 )(bmode, rf, needle_mask, prostate_mask)
-
-        else:
-            bmode, needle_mask, prostate_mask = RandomTranslation(
-                translation=(0.2, 0.2)
-            )(bmode, needle_mask, prostate_mask)
+            else:
+                bmode, needle_mask, prostate_mask = RandomTranslation(
+                    translation=(0.2, 0.2)
+                )(bmode, needle_mask, prostate_mask)
 
         # interpolate the masks to the mask size
         needle_mask = T.Resize(
@@ -126,10 +129,10 @@ class TransformV2:
         out["bmode"] = bmode
         out["needle_mask"] = needle_mask
         out["prostate_mask"] = prostate_mask
-
         if item.get("rf") is not None:
             out["rf"] = rf
 
+        # SCALAR LABEL/PROMPT DATA PROCESSING
         out["label"] = torch.tensor(item["grade"] != "Benign").long()
         pct_cancer = item["pct_cancer"]
         if np.isnan(pct_cancer):
@@ -195,18 +198,28 @@ class DataLoaderFactory:
         val_seed: int = 0,
         rf_as_bmode: bool = False,
         include_rf: bool = True,
+        splits_file=None,
     ):
 
-        train_cores, val_cores, test_cores = select_cohort(
-            fold=fold,
-            n_folds=n_folds,
-            test_center=test_center,
-            undersample_benign_ratio=undersample_benign_ratio,
-            involvement_threshold_pct=min_involvement_train,
-            exclude_benign_cores_from_positive_patients=remove_benign_cores_from_positive_patients,
-            splits_file="/ssd005/projects/exactvu_pca/nct2013/patient_splits.csv",
-            val_seed=val_seed,
-        )
+        if splits_file is not None: 
+            print(f"Reading splits from {splits_file}")
+            with open(splits_file, "r") as f:
+                splits = json.load(f)
+                train_cores = splits["train"]
+                val_cores = splits["val"]
+                test_cores = splits["test"]
+        else:
+            print(f"Generating splits") 
+            train_cores, val_cores, test_cores = select_cohort(
+                fold=fold,
+                n_folds=n_folds,
+                test_center=test_center,
+                undersample_benign_ratio=undersample_benign_ratio,
+                involvement_threshold_pct=min_involvement_train,
+                exclude_benign_cores_from_positive_patients=remove_benign_cores_from_positive_patients,
+                splits_file="/ssd005/projects/exactvu_pca/nct2013/patient_splits.csv",
+                val_seed=val_seed,
+            )
 
         if limit_train_data is not None:
             cores = train_cores
@@ -278,3 +291,6 @@ class DataLoaderFactory:
             num_workers=8,
             pin_memory=True,
         )
+
+
+

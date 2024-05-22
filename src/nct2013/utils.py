@@ -7,11 +7,14 @@ from tqdm import tqdm
 
 from . import data_accessor
 
-DATA_ROOT = os.environ['DATA_ROOT']
+DATA_ROOT = os.getenv('PROSTNFOUND_DATA_DIR')
+if DATA_ROOT is None:
+    raise ValueError('PROSTNFOUND_DATA_DIR environment variable is not set')
+
 PREPROCESSED_DATA_DIR = os.path.join(DATA_ROOT, 'preprocessed_data')
 
-
 def load_or_create_resized_bmode_data(image_size): 
+
     dataset_dir = os.path.join(PREPROCESSED_DATA_DIR, f'images_{image_size[0]}x{image_size[1]}')
     if not os.path.exists(dataset_dir): 
         print(f'Creating preprocessed dataset at {dataset_dir}')

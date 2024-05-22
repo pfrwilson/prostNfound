@@ -152,25 +152,69 @@ class SmallFormatHDF5ExactNCT2013DataAccessor(ExactNCT2013DataAccessorBase):
         self.h5_file.close()
 
 
+class LargeFormatExactNCT2013DataAccessor(ExactNCT2013DataAccessorBase):
+    def __init__(self, data_dir, hdf5_path, metadata_path):
+        self.data_dir = data_dir
+        self.h5_path = hdf5_path
+        self.h5_file = h5py.File(self.h5_path, "r")
+        self.metadata = pd.read_csv(metadata_path)
+
+    def get_metadata_table(self):
+        return self.metadata
+
+    def get_rf_image(self, core_id, frame_idx=0):
+        assert frame_idx == 0, "Only frame_idx=0 is supported"
+        return self.h5_file["rf"][core_id][..., 0]
+
+    def get_bmode_image(self, core_id, frame_idx=0):
+        assert frame_idx == 0, "Only frame_idx=0 is supported"
+        return self.h5_file["bmode"][core_id][..., 0]
+
+    def get_num_frames(self, core_id):
+        return 1  # Only 1 frame per core_id
+
+    def get_prostate_mask(self, core_id):
+        return self.h5_file["prostate_mask"][core_id][:]
+
+    def get_needle_mask(self, core_id):
+        return self.h5_file["needle_mask"][core_id][:]
+
+    def __del__(self):
+        self.h5_file.close()
+
+
 def setup_data_accessor():
     """Sets up the data accessor for the NCT2013 dataset.
 
     This function should parse system configuration and return the appropriate
-    data accessor. class instance
+    data accessor class instance
     """
 
-    if os.path.exists("/ssd005/projects/exactvu_pca/nct2013"):
-        # we are on the vector server
-        return VectorClusterExactNCT2013DataAccessor(
-            prostate_segmentation_dir="/ssd005/projects/exactvu_pca/nct_segmentations_medsam_finetuned_2023-11-10"
-        )
-    else:
-        if "NCT2013_HDF5_PATH" in os.environ:
-            return SmallFormatHDF5ExactNCT2013DataAccessor(
-                os.environ["NCT2013_HDF5_PATH"]
-            )
-        else:
-            raise ValueError("NCT2013_HDF5_PATH environment variable not set")
+    # if os.path.exists("/ssd005/projects/exactvu_pca/nct2013"):
+    #     # we are on the vector server
+    #     return VectorClusterExactNCT2013DataAccessor(
+    #         prostate_segmentation_dir="/ssd005/projects/exactvu_pca/nct_segmentations_medsam_finetuned_2023-11-10"
+    #     )
+    # else:
+    #     if "NCT2013_HDF5_PATH" in os.environ:
+    #         return SmallFormatHDF5ExactNCT2013DataAccessor(
+    #             os.environ["NCT2013_HDF5_PATH"]
+    #         )
+    #     else:
+    #         raise ValueError("NCT2013_HDF5_PATH environment variable not set")
 
+    # PROSTNFOUND_DATA_DIR=/ssd005/projects/exactvu_pca/nct2013
+    # PROSTNFOUND_DATA_H5_PATH=/ssd005/projects/exactvu_pca/nct2013/data.h5 
+    # PROSTNFOUND_DATA_METADATA_PATH=/ssd005/projects/exactvu_pca/nct2013/metadata_with_approx_psa_density.csv
+
+    # read env variables
+    data_dir = os.getenv("PROSTNFOUND_DATA_DIR")
+    hdf5_path = os.getenv("PROSTNFOUND_DATA_H5_PATH")
+    metadata_path = os.getenv("PROSTNFOUND_DATA_METADATA_PATH")
+
+    if hdf5_path is not None and metadata_path is not None and data_dir is not None:
+        return LargeFormatExactNCT2013DataAccessor(data_dir, hdf5_path, metadata_path)
+    else:
+        raise ValueError("Environment variables for data not set. See `.env` file.")
 
 data_accessor = setup_data_accessor()

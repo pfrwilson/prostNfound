@@ -1,0 +1,12 @@
+{
+    "args": {
+        "cohort_selection": {
+            "val_seed": 0,
+            "undersample_benign_ratio": 6.0,
+            "min_involvement_train": 40,
+            "remove_benign_cores_from_positive_patients": true,
+            "limit_train_data": null,
+            "train_subsample_seed": 42
+        }
+    }
+}

@@ -1,0 +1,13 @@
+pandas==2.1.1
+wandb
+torchvision==0.16.1
+matplotlib
+tqdm 
+rich-argparse
+einops
+numpy
+scikit-learn
+scikit-image
+monai
+simple-parsing
+python-dotenv
