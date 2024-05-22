@@ -36,6 +36,25 @@ if CHECKPOINT_DIR is None:
     )
 
 
+def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=False): 
+    # "Return hiddens" feature added
+
+    x = image_encoder.patch_embed(x)
+    if image_encoder.pos_embed is not None:
+        x = x + image_encoder.pos_embed
+
+    hiddens = []
+    for blk in image_encoder.blocks:
+        x = blk(x)
+        if return_hiddens:
+            hiddens.append(x)
+
+    x = image_encoder.neck(x.permute(0, 3, 1, 2))
+
+    return (x, hiddens) if return_hiddens else x
+
+
+
 def build_sam():
     """Builds the sam-vit-b model."""
     checkpoint = os.path.join(CHECKPOINT_DIR, "sam_vit_b_01ec64.pth")
@@ -49,6 +68,7 @@ def build_medsam():
     """
     checkpoint = os.path.join(CHECKPOINT_DIR, "medsam_vit_b_cpu.pth")
     model = sam_model_registry["vit_b"](checkpoint=checkpoint)
+    type(model.image_encoder).forward = forward_return_features
     return model
 
 

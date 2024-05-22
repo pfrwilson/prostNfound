@@ -1,5 +1,6 @@
 from dataclasses import dataclass, field
 import typing as tp
+from warnings import warn
 import torch
 from torch import nn
 import logging
@@ -21,6 +22,7 @@ class ProstNFound(nn.Module):
         "adapter_sam",
         "adapter_sammed_2d",
     ]
+    _WARNED_RESIZE = False 
 
     def __init__(
         self,
@@ -45,6 +47,7 @@ class ProstNFound(nn.Module):
         pos_embed_cnn_patch: bool = True,
         pool_patch_features: bool = None,
         prompt_embedding_dim=256,
+        auto_resize_image_to_native: bool = True
     ):
         super().__init__()
         self.floating_point_prompts = floating_point_prompts
@@ -54,6 +57,7 @@ class ProstNFound(nn.Module):
         self.use_sparse_cnn_patch_features_rf = use_sparse_cnn_patch_features_rf
         self.num_data_independent_prompts = num_data_independent_prompts
         self.use_prostate_mask_prompt = use_prostate_mask_prompt
+        self.auto_resize_image_to_native = auto_resize_image_to_native
 
         if use_sparse_cnn_patch_features and use_sparse_cnn_patch_features_rf:
             raise ValueError(
@@ -71,12 +75,6 @@ class ProstNFound(nn.Module):
             )
 
         self.sparse_cnn_backbone_path = sparse_cnn_backbone_path
-
-        # for p in prompts:
-        #     if not p in self.PROMPT_OPTIONS:
-        #         raise ValueError(
-        #             f"Unknown prompt option: {p}. Options are {self.PROMPT_OPTIONS}"
-        #         )
 
         # BUILD BACKBONE
         if sam_backbone == "medsam":
@@ -206,13 +204,18 @@ class ProstNFound(nn.Module):
         return_prompt_embeddings=False,
         **prompts,
     ):
-        DEVICE = image.device
         B, C, H, W = image.shape
 
-        if H != self.image_size_for_features or W != self.image_size_for_features:
-            image_resized_for_features = torch.nn.functional.interpolate(
-                image, size=(self.image_size_for_features, self.image_size_for_features)
-            )
+        if (H != self.image_size_for_features or W != self.image_size_for_features):
+            if not self._WARNED_RESIZE: 
+                warn(f"Detected image of resolution {H, W} which is different from native image encoder resolution {self.image_size_for_features, self.image_size_for_features}")
+                self._WARNED_RESIZE = True
+            if self.auto_resize_image_to_native:
+                image_resized_for_features = torch.nn.functional.interpolate(
+                    image, size=(self.image_size_for_features, self.image_size_for_features)
+                )
+            else: 
+                image_resized_for_features = image
         else:
             image_resized_for_features = image
 
