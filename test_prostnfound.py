@@ -4,7 +4,6 @@ import os
 from argparse import ArgumentParser, Namespace
 
 import torch
-from src.data_factory import DataLoaderFactory
 from src.losses import MaskedPredictionModule
 from src.prostnfound import ProstNFound, build_prostnfound
 
