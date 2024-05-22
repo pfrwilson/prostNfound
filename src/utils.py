@@ -22,7 +22,7 @@ from sklearn.metrics import (
     roc_curve,
 )
 import matplotlib.pyplot as plt
-
+from warnings import warn
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -89,13 +89,16 @@ def calculate_metrics(predictions, labels, log_images=False):
     predictions = predictions[~nanvalues]
     labels = labels[~nanvalues]
 
-    
     metrics = {}
 
     # core predictions
     core_probs = predictions
     core_labels = labels
-    metrics["auc"] = roc_auc_score(core_labels, core_probs)
+    try: 
+        metrics["auc"] = roc_auc_score(core_labels, core_probs)
+    except ValueError:
+        warnings.warn("ROC AUC score could not be calculated. Setting to 0.5")
+        metrics["auc"] = 0.5
 
     # find the sensitivity at fixed specificities
     fpr, tpr, thresholds = roc_curve(core_labels, core_probs)
