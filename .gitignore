@@ -161,3 +161,10 @@ cython_debug/
 
 /slurm_logs 
 /experiments
+*.log
+*.pt
+pyrightconfig.json
+prompt_table.csv
+*.ipynb
+splits/
+.slurm/
