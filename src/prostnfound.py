@@ -243,6 +243,10 @@ class ProstNFound(nn.Module):
         sparse_embedding, dense_embedding = self.medsam_model.prompt_encoder.forward(
             None, None, mask
         )
+        if (dense_embedding.shape[-2] != image_feats.shape[-2]) or (dense_embedding.shape[-1] != image_feats.shape[-1]):
+            dense_embedding = torch.nn.functional.interpolate(
+                dense_embedding, size=image_feats.shape[-2:],
+            )
 
         # if "dense_cnn_features" in self.prompts:
         #     dense_features = self.patch_feature_cnn[0](image)
@@ -308,9 +312,15 @@ class ProstNFound(nn.Module):
                     [sparse_embedding, patch_cnn_sparse_embeddings], dim=1
                 )
 
+        pe = self.medsam_model.prompt_encoder.get_dense_pe()
+        if (pe.shape[-2] != image_feats.shape[-2]) or (pe.shape[-1] != image_feats.shape[-1]):
+            pe = torch.nn.functional.interpolate(
+                pe, size=image_feats.shape[-2:],
+            )
+
         mask_logits = self.medsam_model.mask_decoder.forward(
             image_feats,
-            self.medsam_model.prompt_encoder.get_dense_pe(),
+            pe,
             sparse_embedding,
             dense_embedding,
             multimask_output=False,
@@ -599,6 +609,7 @@ class ProstNFoundConfig:
             Could help to reduce excessive reliance on prompts.
         pool_patch_features: The pooling operation to use for patch features. If None, does no pooling. We recommend max. Only applies if using one of the patch feature modes. 
         sparse_cnn_backbone_path: The path to the sparse CNN backbone weights to use. Only applies if using one of the patch feature modes.
+        auto_resize_image_to_native: If True, automatically resizes images to the native resolution of the image encoder.
     """
     backbone: tp.Literal[*ProstNFound.BACKBONE_OPTIONS] = "medsam"
     floating_point_prompts: list[str] = field(default_factory=lambda:[])
@@ -610,6 +621,7 @@ class ProstNFoundConfig:
     prompt_dropout: float = 0.0 
     pool_patch_features: str | None = None #
     sparse_cnn_backbone_path: str | None = None 
+    auto_resize_image_to_native: bool = True
 
 
 def build_prostnfound(cfg: ProstNFoundConfig): 
@@ -626,6 +638,7 @@ def build_prostnfound(cfg: ProstNFoundConfig):
         sam_backbone=cfg.backbone,
         sparse_cnn_backbone_path=cfg.sparse_cnn_backbone_path,
         pool_patch_features=cfg.pool_patch_features,
+        auto_resize_image_to_native=cfg.auto_resize_image_to_native
     )
 
     logging.info(f"Number of parameters: {sum(p.numel() for p in model.parameters())}")
@@ -633,3 +646,12 @@ def build_prostnfound(cfg: ProstNFoundConfig):
 
     return model
 
+
+if __name__ == "__main__":
+    model = ProstNFound(
+        auto_resize_image_to_native=False
+    )
+    bmode = torch.randn(1, 3, 224, 224)
+    model.forward(bmode)
+
+    print('hello')

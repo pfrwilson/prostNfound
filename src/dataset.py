@@ -365,7 +365,7 @@ class CohortSelector:
                     leave_out=options.test_center,
                     val_size=options.val_train_ratio,
                     val_seed=options.val_seed,
-                ),
+                )
             )
 
         train_cores = self.get_core_ids(train_patients)

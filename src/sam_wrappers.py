@@ -36,29 +36,11 @@ if CHECKPOINT_DIR is None:
     )
 
 
-def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=False): 
-    # "Return hiddens" feature added
-
-    x = image_encoder.patch_embed(x)
-    if image_encoder.pos_embed is not None:
-        x = x + image_encoder.pos_embed
-
-    hiddens = []
-    for blk in image_encoder.blocks:
-        x = blk(x)
-        if return_hiddens:
-            hiddens.append(x)
-
-    x = image_encoder.neck(x.permute(0, 3, 1, 2))
-
-    return (x, hiddens) if return_hiddens else x
-
-
-
 def build_sam():
     """Builds the sam-vit-b model."""
     checkpoint = os.path.join(CHECKPOINT_DIR, "sam_vit_b_01ec64.pth")
     model = sam_model_registry["vit_b"](checkpoint=checkpoint)
+    wrap_with_interpolated_pos_embedding_(model)
     return model
 
 
@@ -69,6 +51,7 @@ def build_medsam():
     checkpoint = os.path.join(CHECKPOINT_DIR, "medsam_vit_b_cpu.pth")
     model = sam_model_registry["vit_b"](checkpoint=checkpoint)
     type(model.image_encoder).forward = forward_return_features
+    wrap_with_interpolated_pos_embedding_(model)
     return model
 
 
@@ -79,6 +62,7 @@ def build_sammed_2d():
     args.encoder_adapter = True
     args.sam_checkpoint = os.path.join(CHECKPOINT_DIR, "sam-med2d_b.pth")
     model = sammed_model_registry["vit_b"](args).to(device)
+    wrap_with_interpolated_pos_embedding_(model)
     return model
 
 
@@ -97,6 +81,7 @@ def build_adapter_medsam_256():
 def build_adapter_sammed_2d():
     model = build_sammed_2d()
     freeze_non_adapter_layers(model.image_encoder)
+    wrap_with_interpolated_pos_embedding_(model)
     return model
 
 
@@ -106,6 +91,7 @@ def build_adapter_sam():
         model.image_encoder, adapter_dim=256
     )
     freeze_non_adapter_layers(model.image_encoder)
+    wrap_with_interpolated_pos_embedding_(model)
     return model
 
 
@@ -182,48 +168,95 @@ def freeze_non_adapter_layers(model: nn.Module):
     return model
 
 
-class ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(nn.Module): 
-    def __init__(self, image_encoder: ImageEncoderViT): 
-        super().__init__()
-        self.image_encoder = image_encoder
-        self.neck = image_encoder.neck 
-        self.patch_embed = image_encoder.patch_embed
-        self.pos_embed = image_encoder.pos_embed
+# class ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(nn.Module): 
+#     def __init__(self, image_encoder: ImageEncoderViT): 
+#         super().__init__()
+#         self.image_encoder = image_encoder
+#         self.neck = image_encoder.neck 
+#         self.patch_embed = image_encoder.patch_embed
+#         self.pos_embed = image_encoder.pos_embed
+# 
+#     def forward(self, x): 
+#         x = self.image_encoder.patch_embed(x)
+#         x = x + self.interpolate_pos_encoding(x)
+#         for blk in self.image_encoder.blocks: 
+#             x = blk(x)
+#         x = self.image_encoder.neck(x.permute(0, 3, 1, 2))
+#         return x
+# 
+#     def interpolate_pos_encoding(self, x):
+#         npatch_in_h = x.shape[1]
+#         npatch_in_w = x.shape[2]
+# 
+#         patch_pos_embed = self.image_encoder.pos_embed
+# 
+#         npatch_native_h = patch_pos_embed.shape[1]
+#         npatch_native_w = patch_pos_embed.shape[2]
+# 
+#         if npatch_native_h == npatch_in_h and npatch_native_w == npatch_in_w:
+#             return self.image_encoder.pos_embed
+# 
+#         w0 = npatch_in_w
+#         h0 = npatch_in_h
+#         # we add a small number to avoid floating point error in the interpolation
+#         # see discussion at https://github.com/facebookresearch/dino/issues/8
+#         w0, h0 = w0 + 0.1, h0 + 0.1
+#         patch_pos_embed = nn.functional.interpolate(
+#             patch_pos_embed.permute(0, 3, 1, 2),
+#             scale_factor=(h0 / npatch_native_h, w0 / npatch_native_w),
+#             mode='bicubic',
+#         )
+#         assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
+#         patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1)
+#         return patch_pos_embed
 
-    def forward(self, x): 
-        x = self.image_encoder.patch_embed(x)
-        x = x + self.interpolate_pos_encoding(x)
-        for blk in self.image_encoder.blocks: 
-            x = blk(x)
-        x = self.image_encoder.neck(x.permute(0, 3, 1, 2))
-        return x
 
-    def interpolate_pos_encoding(self, x):
-        npatch_in_h = x.shape[1]
-        npatch_in_w = x.shape[2]
+def interpolate_pos_encoding(x, pos_embed):
+    npatch_in_h = x.shape[1]
+    npatch_in_w = x.shape[2]
 
-        patch_pos_embed = self.image_encoder.pos_embed
+    patch_pos_embed = pos_embed
 
-        npatch_native_h = patch_pos_embed.shape[1]
-        npatch_native_w = patch_pos_embed.shape[2]
+    npatch_native_h = patch_pos_embed.shape[1]
+    npatch_native_w = patch_pos_embed.shape[2]
 
-        if npatch_native_h == npatch_in_h and npatch_native_w == npatch_in_w:
-            return self.image_encoder.pos_embed
+    if npatch_native_h == npatch_in_h and npatch_native_w == npatch_in_w:
+        return pos_embed
 
-        w0 = npatch_in_w
-        h0 = npatch_in_h
-        # we add a small number to avoid floating point error in the interpolation
-        # see discussion at https://github.com/facebookresearch/dino/issues/8
-        w0, h0 = w0 + 0.1, h0 + 0.1
-        patch_pos_embed = nn.functional.interpolate(
-            patch_pos_embed.permute(0, 3, 1, 2),
-            scale_factor=(h0 / npatch_native_h, w0 / npatch_native_w),
-            mode='bicubic',
-        )
-        assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
-        patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1)
-        return patch_pos_embed
+    w0 = npatch_in_w
+    h0 = npatch_in_h
+    # we add a small number to avoid floating point error in the interpolation
+    # see discussion at https://github.com/facebookresearch/dino/issues/8
+    w0, h0 = w0 + 0.1, h0 + 0.1
+    patch_pos_embed = nn.functional.interpolate(
+        patch_pos_embed.permute(0, 3, 1, 2),
+        scale_factor=(h0 / npatch_native_h, w0 / npatch_native_w),
+        mode='bicubic',
+    )
+    assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
+    patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1)
+    return patch_pos_embed
+
+
+def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=False): 
+    # "Return hiddens" feature added
+
+    x = image_encoder.patch_embed(x)
+    if image_encoder.pos_embed is not None:
+        x = x + interpolate_pos_encoding(x, image_encoder.pos_embed)
+
+    hiddens = []
+    for blk in image_encoder.blocks:
+        x = blk(x)
+        if return_hiddens:
+            hiddens.append(x)
+
+    x = image_encoder.neck(x.permute(0, 3, 1, 2))
+
+    return (x, hiddens) if return_hiddens else x
 
 
 def wrap_with_interpolated_pos_embedding_(sam_model): 
-    sam_model.image_encoder = ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(sam_model.image_encoder)
+    type(sam_model.image_encoder).forward = forward_return_features
+
+    #sam_model.image_encoder = ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(sam_model.image_encoder)
