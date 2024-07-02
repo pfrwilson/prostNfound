@@ -12,18 +12,18 @@ Medical foundation models, pre-trained on extensive and diverse datasets, provid
 - **Improved Detection Accuracy**: ProstNFound achieves 90% sensitivity at 40% specificity, demonstrating significant improvements over state-of-the-art models.
 - **Clinical Relevance**: Performance competitive with expert radiologists reading multi-parametric MRI or micro-ultrasound images, suggesting significant promise for clinical application.
 
-## Methodology
+### Methodology
 
 ![Method3](./.github/Method3.png)
 
 The figure above illustrates the methodology of ProstNFound. 
 ProstNFound integrates a B-mode image encoder with a conditional prompt module that embeds raw RF patch data (using a CNN patch encoder) and patient metadata. These embeddings are fed into a mask decoder to generate a cancer likelihood heatmap. The training process uses histopathology labels in the needle region. The patch encoder is initialized through self-supervised pretraining, while the image encoder and mask decoder are initialized from a medical image foundation model.
 
-## Dataset
+### Dataset
 
 ProstNFound was evaluated using a multi-center micro-ultrasound dataset comprising 693 patients. This diverse dataset provided a robust basis for training and testing the model, ensuring its generalizability across different clinical settings.
 
-## Results
+### Results
 
 ProstNFound's integration of specialized auxiliary networks and foundation models has led to:
 
@@ -33,6 +33,8 @@ ProstNFound's integration of specialized auxiliary networks and foundation model
 ![Heatmap Predictions](./.github/heatmap_predictions.png)
 
 This figure shows a demo of the model outputs, where the model activations localize supicious regions of cancer (right column) confirmed by histopathology (Gleason grade), while showing little to no activations for benign examples (left column).
+
+# Usage
 
 ## Installation
 
@@ -61,37 +63,66 @@ To install and use ProstNFound, follow these steps:
 
 5. Install torch=2.0+ from their website: https://pytorch.org/get-started/locally/
 
-## Usage - Details TBD
+## Dataset Structure
 
-To use ProstNFound for PCa detection, follow these steps:
+This code requires your dataset to be organized and structured according to the structure outlined in [the data documentation](data/README.md). Please extract your folder into a matching format. 
 
-1. Prepare your micro-ultrasound data according to the dataset format specified in the documentation (see the data folder for more details)
+## Training/Inference
+### 1. Patch-based SSL Pretraining 
 
-2. (Optional - only required for using the patch CNN prompts): Run the self-supervised training stage for the CNN: 
-    ```bash
-    FOLD=1
-    N_FOLDS=10
-    SPLITS_PATH=splits/ssl_fold${FOLD}:${N_FOLDS}.json
-    DATA_TYPE=rf
-    CHECKPOINT_PATH=/checkpoint/$USER/$SLURM_JOB_ID/checkpoint.pt
+This stage is optional, and only required for using the patch CNN prompts. While this step adds to the model's performance, we can still obtain good performance when leaving it out, so you may want to disable it in the first version of your experiments for the sake of simplicity. If we want to use it, we have to run a command like the following, we run the self-supervised training stage for the CNN as follows: 
 
-    srun python train_patch_ssl.py \
-        --splits_file $SPLITS_PATH \
-        --batch_size 64 \
-        --lr 1e-4 \
-        --data_type $DATA_TYPE \
-        --name patch_ssl_${CENTER}_${DATA_TYPE}_${VAL_SEED} \
-        --checkpoint_path=$CHECKPOINT_PATH \
-        --save_weights_path=ssl_checkpoints/fold${FOLD}:${N_FOLDS}_rf_ssl_weights.pt
-    ```
+```bash
+SPLITS_FILE=data/splits.json # replace this
 
-3. Run the training script to fine-tune the foundation model with domain-specific knowledge (see `scripts/run_main_training.sh` for an example)
+python train_patch_ssl.py --splits_file=$SPLITS_FILE --batch_size=64 --lr=1e-4 --data_type=rf --name=patch_ssl_pretraining --checkpoint_path=/checkpoint/$USER --save_weights_path=ssl_checkpoints/rf_ssl_weights.pt 
+```
 
-3. Use the trained model for inference (see `scripts/test_prostnfound.sh` for an example)
+This will pretrain the patch CNN model using self-supervised learning and save the best model from the training run to `ssl_checkpoints/rf_ssl_weights.pt`.
+
+Discover additional config options using: 
+```bash
+python train_patch_ssl.py -h
+```
+
+### 2. Main Training
+
+To run the main training, we use the following command (`--sparse_cnn_backbone_path` is optional - if you skipped step 1 exclude this line): 
+
+```bash
+# replace these according to your setup
+EXP_NAME=my_experiment
+EXP_DIR=experiments/${EXP_NAME}
+CKPT_DIR=/checkpoint/$USER
+SPLITS_FILE=data/splits.json
+
+# run training
+python train_prostnfound.py \
+    --config_path conf/main_training.json \
+    --exp_dir $EXP_DIR \
+    --checkpoint_dir $CKPT_DIR \
+    --splits_json_path splits/fold${FOLD}:${N_FOLDS}.json \
+    --prompt_table_csv_path prompt_table.csv \
+    --sparse_cnn_backbone_path ssl_checkpoints/rf_ssl_weights.pt \
+    --name $EXP_NAME &
+```
+
+to see the full list of options, you can run `python train_prostnfound.py -h`. It is also possible to edit fields in the [main config file](conf/main_training.json).
+
+### 3. Evaluation
+
+To run the tests (full metric calculation for the test set, heatmap generation, etc. ) for the trained model, you will run `test_prostnfound.py`. For example: 
+```bash
+python test_prostnfound.py \
+    -c /fs01/home/pwilson/projects/prostNfound/experiments/fold-0_reprod/12676934/checkpoints/config.json \
+    -m /fs01/home/pwilson/projects/prostNfound/experiments/fold-0_reprod/12676934/checkpoints/best_model.ckpt \
+    -o .test
+```
+Here we would replace `-c` with the path to the config file output by the script we ran in step 2, `-m` by the path to the best_model saved by step 2. and `-o` by the path to our desired output directory for the tests.
 
 ## License
 
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details. It depends on a few libraries stored in the `vendor` folder of this source tree - licencing information for these is stored in that folder.
 
 ## Contact
 
