@@ -60,6 +60,7 @@ class Args(Serializable):
     encoder_load_mode: str = "none" # The mode to use for loading the encoder weights.
     seed: int = 42 # The seed to use for training.
     use_amp: bool = False # If True, uses automatic mixed precision.
+    torch_compile: bool = False # If True, uses torch.compile
     device: str = 'cuda' if torch.cuda.is_available() else 'cpu' # The device to use for training
     exp_dir: str = "experiments/default" # The directory to use for the experiment.
     checkpoint_dir: str = None # The directory to use for the checkpoints. If None, does not save checkpoints.
@@ -119,7 +120,9 @@ class Experiment:
         # MODEL
         self.model = build_prostnfound(self.config.model)
         self.model.to(self.config.device)
-        torch.compile(self.model)
+
+        if self.config.torch_compile:
+            torch.compile(self.model)
 
         self.loss_fn = build_loss(self.config.loss)
 
