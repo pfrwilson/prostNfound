@@ -11,9 +11,10 @@ from .utils import PatchView
 from itertools import chain
 import logging
 from timm.models.resnet import resnet10t
+from huggingface_hub import PyTorchModelHubMixin
 
 
-class ProstNFound(nn.Module):
+class ProstNFound(nn.Module, PyTorchModelHubMixin):
     BACKBONE_OPTIONS = [
         "sam",
         "medsam",
@@ -195,6 +196,9 @@ class ProstNFound(nn.Module):
                 torch.zeros(prompt_embedding_dim)
             )  # for padding the number of patches to a fixed number in a minibatch
 
+        self.tc_layer = nn.Conv2d(1, 1, 1)
+        self.use_tc = False
+
     def forward(
         self,
         image=None,
@@ -325,6 +329,9 @@ class ProstNFound(nn.Module):
             dense_embedding,
             multimask_output=False,
         )[0]
+
+        if self.use_tc: 
+            mask_logits = self.tc_layer(mask_logits)
 
         if return_prompt_embeddings:
             return mask_logits, sparse_embedding, dense_embedding
@@ -621,7 +628,7 @@ class ProstNFoundConfig:
     prompt_dropout: float = 0.0 
     pool_patch_features: str | None = None #
     sparse_cnn_backbone_path: str | None = None 
-    auto_resize_image_to_native: bool = True
+    auto_resize_image_to_native: bool = False
 
 
 def build_prostnfound(cfg: ProstNFoundConfig): 
