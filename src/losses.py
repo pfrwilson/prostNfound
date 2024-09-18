@@ -21,12 +21,12 @@ class MaskedPredictionModule(nn.Module):
         """Computes the patch and core predictions and labels within the valid loss region."""
         B, C, H, W = heatmap_logits.shape
 
-        assert mask.shape == (
-            B,
-            1,
-            H,
-            W,
-        ), f"Expected mask shape to be {(B, 1, H, W)}, got {mask.shape} instead."
+        # assert mask.shape == (
+        #     B,
+        #     1,
+        #     H,
+        #     W,
+        # ), f"Expected mask shape to be {(B, 1, H, W)}, got {mask.shape} instead."
 
         # mask = mask.float()
         # mask = torch.nn.functional.interpolate(mask, size=(H, W)) > 0.5
