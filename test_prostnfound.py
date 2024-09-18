@@ -23,7 +23,6 @@ from skimage.filters import gaussian
 from skimage.morphology import dilation
 from train_prostnfound import Args as TrainConf
 from src.dataset import get_dataloaders_main, DataAccessor
-from rich import print as rprint
 
 
 def parse_args():
@@ -73,7 +72,7 @@ def main(args):
 
     # instantiate the model with the same config
     model = build_prostnfound(config.model)
-    print(model.load_state_dict(torch.load(model_path, map_location="cpu")))
+    print(model.load_state_dict(torch.load(model_path, map_location="cpu"), strict=False))
 
     # copy the model weights and config to the output directory
     torch.save(model.state_dict(), os.path.join(args.output_dir, "model.pth"))
@@ -108,6 +107,8 @@ def main(args):
 
     for _ in range(10):
         print(optim.step(closure))
+
+    print(f"Found temperature {temp.data.item()} and bias {bias.data.item()} with temperature calibration!")
 
     pixel_preds_tc = pixel_preds / temp + bias
     val_outputs = get_core_predictions_from_pixel_predictions(
@@ -152,18 +153,14 @@ def main(args):
     tc_layer.weight.data[0, 0, 0, 0] = temp.data
     tc_layer.bias.data[0] = bias.data
 
-    class TCModel(nn.Module):
-        def __init__(self, model, tc_layer):
-            super().__init__()
-            self.model = model
-            self.tc_layer = tc_layer
-
-        def forward(self, x, *args, **kwargs):
-            x = self.model(x, *args, **kwargs)
-            x = self.tc_layer(x)
-            return x
-
-    tc_model = TCModel(model, tc_layer).cuda()
+    tc_model = model
+    tc_model.tc_layer = tc_layer
+    tc_model.use_tc = True
+    tc_model.cuda()
+    tc_model.save_pretrained(os.path.join(args.output_dir, 'model'))
+    # tc_model = TCModel(model, tc_layer).cuda()
+    # save model with configuration for later
+    #torch.save(tc_model.state_dict(), os.path.join(args.output_dir, 'model_tc.pth'))
 
     # ========================================
     # EXPORT heatmap predictions
@@ -202,7 +199,21 @@ def main(args):
             hm_save_path = os.path.join(args.output_dir, 'heatmaps', grade, f"{core_id}.png")
             os.makedirs(os.path.dirname(hm_save_path), exist_ok=True)
             plt.savefig(hm_save_path)
+            plt.close()
     
+
+class TCModel(nn.Module):
+    def __init__(self, model, tc_layer=None):
+        super().__init__()
+        self.model = model
+        self.tc_layer = tc_layer or nn.Conv2d(1, 1, 1)
+
+    def forward(self, x, *args, **kwargs):
+        x = self.model(x, *args, **kwargs)
+        x = self.tc_layer(x)
+        return x
+
+
 @torch.no_grad()
 def extract_heatmap_and_data(model, batch):
     batch = batch.copy()
@@ -216,8 +227,8 @@ def extract_heatmap_and_data(model, batch):
         rf = None
 
     prompt_keys = (
-        model.model.floating_point_prompts
-        + model.model.discrete_prompts
+        model.floating_point_prompts
+        + model.discrete_prompts
     )
     for key in prompt_keys:
         if key not in batch:
