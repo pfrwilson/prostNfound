@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 import json
 import os
-from argparse import ArgumentParser, Namespace
+from simple_parsing import parse, field
 
 import torch
+import wandb
 from src.losses import MaskedPredictionModule
 from src.prostnfound import ProstNFound, build_prostnfound
 
@@ -23,29 +24,19 @@ from skimage.filters import gaussian
 from skimage.morphology import dilation
 from train_prostnfound import Args as TrainConf
 from src.dataset import get_dataloaders_main, DataAccessor
+from torch.utils.data import DataLoader
 
 
-def parse_args():
-    parser = ArgumentParser()
-    parser.add_argument(
-        "--model_weights", "-m",
-        required=True,
-        help="""Path to the `.pth` file holding the saved model weights.""",
-        dest='model_weights'
-    )
-    parser.add_argument(
-        "--config", '-c', help='path to experiment configuration, used to load data and instantiate model', 
-        dest='config'
-    )
-    parser.add_argument(
-        "--output_dir", "-o",
-        required=True,
-        help="""Path to the directory where metrics and heatmaps will be saved.""",
-    )
-    return parser.parse_args()
+@dataclass
+class Args: 
+    model_weights: str = field(alias='-m') # Path to the `.pth` file holding the saved model weights.
+    config: str = field(alias='-c') # path to experiment configuration file
+    output_dir: str = field(alias='-o') # Path to the directory where metrics and heatmaps will be saved.
+    no_heatmaps: bool = False 
+    pos_encouragement_factor: float = 1.
 
 
-def main(args):
+def main(args: Args):
     model_path = args.model_weights
     config_path = args.config 
     config: TrainConf = TrainConf.load_json(config_path)
@@ -96,7 +87,7 @@ def main(args):
     # weight the loss to account for class imbalance
     pos_weight = (1 - pixel_labels).sum() / pixel_labels.sum()
     # encourage sensitivity over specificity
-    pos_weight *= 1.6
+    pos_weight *= args.pos_encouragement_factor
 
     def closure():
         optim.zero_grad()
@@ -116,6 +107,14 @@ def main(args):
     )
     val_outputs.to_csv(os.path.join(args.output_dir, "val_outputs.csv"))
 
+    # make temperature calibrated model
+    tc_model = model
+    tc_model.temperature.data[:] = temp
+    tc_model.bias.data[:] = bias
+    tc_model.use_tc = True
+    tc_model.cuda()
+    tc_model.save_pretrained(os.path.join(args.output_dir, 'model'))
+
     print("Extracting test predictions.")
     # extract all pixel predictions from test loader
     pixel_preds, pixel_labels, core_ids = extract_all_pixel_predictions(
@@ -123,7 +122,7 @@ def main(args):
     )
     core_ids = np.array(core_ids)
     test_outputs = get_core_predictions_from_pixel_predictions(
-        pixel_preds / temp + bias, pixel_labels, core_ids
+        pixel_preds, pixel_labels, core_ids
     )
     test_outputs.to_csv(os.path.join(args.output_dir, "test_outputs.csv"))
 
@@ -136,48 +135,37 @@ def main(args):
     print("sens", recall_score(core_labels_val, core_preds_val > 0.5))
     print("spec", recall_score(core_labels_val, core_preds_val > 0.5, pos_label=0))
     all_metrics = {}
-    val_metrics = calculate_metrics(core_preds_val, core_labels_val, log_images=False)
+    val_metrics = calculate_metrics(core_preds_val, core_labels_val)
     all_metrics["val"] = val_metrics
 
     print("Test Metrics")
     print("sens", recall_score(core_labels_test, core_preds_test > 0.5))
     print("spec", recall_score(core_labels_test, core_preds_test > 0.5, pos_label=0))
-    calculate_metrics(core_preds_test, core_labels_test, log_images=False)
-    test_metrics = calculate_metrics(core_preds_test, core_labels_test, log_images=False)
+    test_metrics = calculate_metrics(core_preds_test, core_labels_test)
     all_metrics["test"] = test_metrics
     with open(os.path.join(args.output_dir, "metrics.json"), "w") as f:
         json.dump(all_metrics, f)
 
-    # make temperature calibrated model
-    tc_layer = nn.Conv2d(1, 1, 1)
-    tc_layer.weight.data[0, 0, 0, 0] = temp.data
-    tc_layer.bias.data[0] = bias.data
-
-    tc_model = model
-    tc_model.tc_layer = tc_layer
-    tc_model.use_tc = True
-    tc_model.cuda()
-    tc_model.save_pretrained(os.path.join(args.output_dir, 'model'))
-    # tc_model = TCModel(model, tc_layer).cuda()
-    # save model with configuration for later
-    #torch.save(tc_model.state_dict(), os.path.join(args.output_dir, 'model_tc.pth'))
+    if args.no_heatmaps: 
+        return 
 
     # ========================================
     # EXPORT heatmap predictions
     # ========================================
-
     outputs_path = os.path.join(args.output_dir, "heatmaps.h5")
+    test_loader = DataLoader(test_loader.dataset, batch_size=1)
     with h5py.File(outputs_path, "w") as f:
         for batch in tqdm(test_loader, desc="Exporting heatmaps"):
             (
-                heatmap_logits,
+                heatmap_probs,
                 bmode,
                 prostate_mask,
                 needle_mask,
                 core_id,
+                label,
             ) = extract_heatmap_and_data(tc_model, batch)
             f.create_group(str(core_id))
-            f[str(core_id)].create_dataset("heatmap_logits", data=heatmap_logits)
+            f[str(core_id)].create_dataset("heatmap_logits", data=heatmap_probs)
             f[str(core_id)].create_dataset("bmode", data=bmode)
             f[str(core_id)].create_dataset("prostate_mask", data=prostate_mask)
             f[str(core_id)].create_dataset("needle_mask", data=needle_mask)
@@ -185,7 +173,6 @@ def main(args):
     # ==========================================
     # RENDER heatmap predictions
     # ==========================================
-
     with h5py.File(outputs_path, 'r') as f:
         for core_id in tqdm(f.keys(), desc='Rendering heatmaps'): 
             metadata = metadata_table.loc[metadata_table.core_id == core_id].iloc[0].to_dict()
@@ -221,6 +208,8 @@ def extract_heatmap_and_data(model, batch):
     needle_mask = batch.pop("needle_mask").to(DEVICE)
     prostate_mask = batch.pop("prostate_mask").to(DEVICE)
     core_id = batch["core_id"]
+    label = batch["label"]
+
     if "rf" in batch:
         rf = batch.pop("rf").to(DEVICE)
     else:
@@ -254,7 +243,7 @@ def extract_heatmap_and_data(model, batch):
     needle_mask = needle_mask[0, 0].cpu().numpy()
     core_id = core_id
 
-    return heatmap_logits, bmode, prostate_mask, needle_mask, core_id
+    return heatmap_logits, bmode, prostate_mask, needle_mask, core_id, label
 
 
 def extract_all_pixel_predictions(model: ProstNFound, loader):
@@ -411,4 +400,4 @@ def get_core_predictions_from_pixel_predictions(pixel_preds, pixel_labels, core_
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    main(parse(Args))
