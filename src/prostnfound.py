@@ -196,7 +196,8 @@ class ProstNFound(nn.Module, PyTorchModelHubMixin):
                 torch.zeros(prompt_embedding_dim)
             )  # for padding the number of patches to a fixed number in a minibatch
 
-        self.tc_layer = nn.Conv2d(1, 1, 1)
+        self.register_buffer('temperature', torch.tensor([1.]))
+        self.register_buffer('bias', torch.tensor([0.]))
         self.use_tc = False
 
     def forward(
@@ -330,8 +331,7 @@ class ProstNFound(nn.Module, PyTorchModelHubMixin):
             multimask_output=False,
         )[0]
 
-        if self.use_tc: 
-            mask_logits = self.tc_layer(mask_logits)
+        mask_logits = mask_logits / self.temperature[None, None, None, :] + self.bias[None, None, None, :]
 
         if return_prompt_embeddings:
             return mask_logits, sparse_embedding, dense_embedding
