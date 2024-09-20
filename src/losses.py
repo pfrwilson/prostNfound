@@ -229,6 +229,7 @@ class MultiTermCanDetLoss(CancerDetectionLossBase):
 
     def forward(self, cancer_logits, prostate_mask, needle_mask, label, involvement):
         loss = torch.tensor(0, dtype=torch.float32, device=cancer_logits.device)
+
         for term, weight in zip(self.loss_terms, self.weights):
             loss += weight * term(
                 cancer_logits, prostate_mask, needle_mask, label, involvement
@@ -249,6 +250,18 @@ class BinaryGeneralizedCrossEntropy(torch.nn.Module):
         label_one_hot = F.one_hot(labels, 2).float().to(pred.device)
         gce = (1.0 - torch.pow(torch.sum(label_one_hot * pred, dim=1), self.q)) / self.q
         return gce.mean()
+
+
+class InvolvementRegressionLoss(CancerDetectionLossBase):
+    def forward(self, cancer_logits, prostate_mask, needle_mask, label, involvement):
+        losses = []
+        for i in range(len(cancer_logits)):
+            mask = (prostate_mask[i] > 0.5) & (needle_mask[i] > 0.5)
+            logits_in_region = cancer_logits[i][mask]
+            pred_inv = logits_in_region.sigmoid().mean()
+            losses.append(torch.nn.functional.mse_loss(pred_inv, involvement[i]))
+
+        return sum(losses) / len(losses)
 
 
 @dataclass(frozen=True)
@@ -296,9 +309,14 @@ def build_loss(options: LossOptions):
                     needle_mask=loss_needle_mask,
                 )
             )
-            loss_weights.append(loss_weight)
+        elif loss_name == 'involvement_regression': 
+            loss_terms.append(
+                InvolvementRegressionLoss()
+            )
         else: 
             raise NotImplementedError(f"Unknown loss term: {loss_name}")
+
+        loss_weights.append(loss_weight)
 
     return MultiTermCanDetLoss(loss_terms, loss_weights)
 
