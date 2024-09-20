@@ -16,16 +16,15 @@ sys.path.append(
     )
 )
 
-
-from medsam.segment_anything.modeling.image_encoder import (
+from .segment_anything.modeling.image_encoder import (
     Attention,
     Block,
     ImageEncoderViT,
     MLPBlock,
 )
-from vendor.medsam.segment_anything.build_sam import sam_model_registry as medsam_model_registry
-from segment_anything.build_sam import sam_model_registry
-from sam_med2d.segment_anything import sam_model_registry as sammed_model_registry
+from .segment_anything.build_sam import sam_model_registry as medsam_model_registry
+from .segment_anything.build_sam import sam_model_registry
+from vendor.sam_med2d.segment_anything import sam_model_registry as sammed_model_registry
 from argparse import Namespace
 
 

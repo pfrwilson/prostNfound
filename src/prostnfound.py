@@ -207,6 +207,7 @@ class ProstNFound(nn.Module, PyTorchModelHubMixin):
         prostate_mask=None,
         needle_mask=None,
         return_prompt_embeddings=False,
+        return_last_layer_features=False,
         **prompts,
     ):
         B, C, H, W = image.shape
@@ -252,17 +253,6 @@ class ProstNFound(nn.Module, PyTorchModelHubMixin):
             dense_embedding = torch.nn.functional.interpolate(
                 dense_embedding, size=image_feats.shape[-2:],
             )
-
-        # if "dense_cnn_features" in self.prompts:
-        #     dense_features = self.patch_feature_cnn[0](image)
-        #     dense_features = self.patch_feature_cnn[1].forward_features(dense_features)
-        #     dense_features = self.dense_feature_projection(dense_features)
-        #     dense_features = torch.nn.functional.interpolate(
-        #         dense_features, size=dense_embedding.shape[-2:]
-        #     )
-        #     if self.training:
-        #         dense_features = torch.nn.functional.dropout(dense_features, p=0.5, training=True)
-        #     dense_embedding = dense_embedding + dense_features
 
         sparse_embedding = sparse_embedding.repeat_interleave(len(image), 0)
 
@@ -322,6 +312,17 @@ class ProstNFound(nn.Module, PyTorchModelHubMixin):
             pe = torch.nn.functional.interpolate(
                 pe, size=image_feats.shape[-2:],
             )
+
+        if return_last_layer_features: 
+            features = self.medsam_model.mask_decoder.forward(
+                image_feats, 
+                pe, 
+                sparse_embedding, 
+                dense_embedding, 
+                multimask_output=False, 
+                return_last_layer_features=True
+            )
+            return features
 
         mask_logits = self.medsam_model.mask_decoder.forward(
             image_feats,
