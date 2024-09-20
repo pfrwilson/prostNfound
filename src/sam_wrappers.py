@@ -23,7 +23,7 @@ from medsam.segment_anything.modeling.image_encoder import (
     ImageEncoderViT,
     MLPBlock,
 )
-
+from vendor.medsam.segment_anything.build_sam import sam_model_registry as medsam_model_registry
 from segment_anything.build_sam import sam_model_registry
 from sam_med2d.segment_anything import sam_model_registry as sammed_model_registry
 from argparse import Namespace
@@ -49,7 +49,7 @@ def build_medsam():
     Builds the MedSAM model by building the SAM model and loading the medsam checkpoint.
     """
     checkpoint = os.path.join(CHECKPOINT_DIR, "medsam_vit_b_cpu.pth")
-    model = sam_model_registry["vit_b"](checkpoint=checkpoint)
+    model = medsam_model_registry["vit_b"](checkpoint=checkpoint)
     type(model.image_encoder).forward = forward_return_features
     wrap_with_interpolated_pos_embedding_(model)
     return model
