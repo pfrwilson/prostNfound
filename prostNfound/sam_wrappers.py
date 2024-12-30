@@ -7,14 +7,9 @@ import os
 import torch
 from torch import nn
 
-import sys 
-sys.path.append(
-    os.path.join(
-        os.path.dirname(__file__),
-        "..",
-        "vendor"
-    )
-)
+import sys
+
+sys.path.append(os.path.join(os.path.dirname(__file__), "..", "vendor"))
 
 from .segment_anything.modeling.image_encoder import (
     Attention,
@@ -24,14 +19,18 @@ from .segment_anything.modeling.image_encoder import (
 )
 from .segment_anything.build_sam import sam_model_registry as medsam_model_registry
 from .segment_anything.build_sam import sam_model_registry
-from vendor.sam_med2d.segment_anything import sam_model_registry as sammed_model_registry
+from .externals.sam_med2d.segment_anything import (
+    sam_model_registry as sammed_model_registry,
+)
 from argparse import Namespace
 
 
-CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR")  # top level checkpoint directory
+CHECKPOINT_DIR = os.environ.get(
+    "PROSTNFOUND_CHECKPOINT_DIR"
+)  # top level checkpoint directory
 if CHECKPOINT_DIR is None:
     raise ValueError(
-        """Environment variable CHECKPOINT_DIR must be set. It should be a directory with sam and medsam checkpoints."""
+        """Environment variable PROSTNFOUND_CHECKPOINT_DIR must be set. It should be a directory with sam and medsam checkpoints."""
     )
 
 
@@ -167,34 +166,34 @@ def freeze_non_adapter_layers(model: nn.Module):
     return model
 
 
-# class ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(nn.Module): 
-#     def __init__(self, image_encoder: ImageEncoderViT): 
+# class ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(nn.Module):
+#     def __init__(self, image_encoder: ImageEncoderViT):
 #         super().__init__()
 #         self.image_encoder = image_encoder
-#         self.neck = image_encoder.neck 
+#         self.neck = image_encoder.neck
 #         self.patch_embed = image_encoder.patch_embed
 #         self.pos_embed = image_encoder.pos_embed
-# 
-#     def forward(self, x): 
+#
+#     def forward(self, x):
 #         x = self.image_encoder.patch_embed(x)
 #         x = x + self.interpolate_pos_encoding(x)
-#         for blk in self.image_encoder.blocks: 
+#         for blk in self.image_encoder.blocks:
 #             x = blk(x)
 #         x = self.image_encoder.neck(x.permute(0, 3, 1, 2))
 #         return x
-# 
+#
 #     def interpolate_pos_encoding(self, x):
 #         npatch_in_h = x.shape[1]
 #         npatch_in_w = x.shape[2]
-# 
+#
 #         patch_pos_embed = self.image_encoder.pos_embed
-# 
+#
 #         npatch_native_h = patch_pos_embed.shape[1]
 #         npatch_native_w = patch_pos_embed.shape[2]
-# 
+#
 #         if npatch_native_h == npatch_in_h and npatch_native_w == npatch_in_w:
 #             return self.image_encoder.pos_embed
-# 
+#
 #         w0 = npatch_in_w
 #         h0 = npatch_in_h
 #         # we add a small number to avoid floating point error in the interpolation
@@ -230,14 +229,14 @@ def interpolate_pos_encoding(x, pos_embed):
     patch_pos_embed = nn.functional.interpolate(
         patch_pos_embed.permute(0, 3, 1, 2),
         scale_factor=(h0 / npatch_native_h, w0 / npatch_native_w),
-        mode='bicubic',
+        mode="bicubic",
     )
     assert int(w0) == patch_pos_embed.shape[-2] and int(h0) == patch_pos_embed.shape[-1]
     patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1)
     return patch_pos_embed
 
 
-def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=False): 
+def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=False):
     # "Return hiddens" feature added
 
     x = image_encoder.patch_embed(x)
@@ -255,7 +254,7 @@ def forward_return_features(image_encoder: ImageEncoderViT, x, return_hiddens=Fa
     return (x, hiddens) if return_hiddens else x
 
 
-def wrap_with_interpolated_pos_embedding_(sam_model): 
+def wrap_with_interpolated_pos_embedding_(sam_model):
     type(sam_model.image_encoder).forward = forward_return_features
 
-    #sam_model.image_encoder = ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(sam_model.image_encoder)
+    # sam_model.image_encoder = ImageEncoderViTWithInterpolatedPositionalEmbeddingsWrapper(sam_model.image_encoder)
