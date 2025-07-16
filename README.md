@@ -2,6 +2,8 @@
 
 ProstNFound is an innovative method designed to improve the accuracy of prostate cancer (PCa) detection using high-resolution micro-ultrasound data and deep learning techniques. By combining the robustness of medical foundation models with specialized domain-specific knowledge, ProstNFound demonstrates significant improvements in detecting PCa, offering performance competitive with expert radiologists.
 
+***Announcement*** We extended ProstNFound to ProstNFound+, a new and improved version of the model that was trained and prospectively validated on new clinical trial data. The model is competitive with expert clinical visual protocols for cancer detection! Code and paper release coming soon. 
+
 ## Overview
 
 Medical foundation models, pre-trained on extensive and diverse datasets, provide a strong knowledge base that can be adapted to various downstream tasks. However, their generality often limits their effectiveness in specialized domains like PCa detection. ProstNFound addresses this challenge by integrating domain-specific knowledge into foundation models, specifically tailored for ultrasound imaging and PCa detection.
